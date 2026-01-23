@@ -156,6 +156,11 @@ class TrelloShoppingApp {
         return store?.icon || '🏪';
     }
 
+    // Normalize string for accent-insensitive search
+    normalizeString(str) {
+        return str.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+    }
+
     async init() {
         console.log('🔧 init() llamado');
 
@@ -731,7 +736,12 @@ class TrelloShoppingApp {
             storeTotals[label.id] = totalCount;
         });
 
-        let html = storeLabels.map(label => {
+        // Sort stores by active products count (descending)
+        const sortedStoreLabels = [...storeLabels].sort((a, b) => {
+            return storeCounts[b.id] - storeCounts[a.id];
+        });
+
+        let html = sortedStoreLabels.map(label => {
             const activeCount = storeCounts[label.id];
             const totalCount = storeTotals[label.id];
             const icon = this.getStoreIcon(label.name);
@@ -776,12 +786,12 @@ class TrelloShoppingApp {
         // Group into active and available (active list is never filtered)
         const activeCards = allStoreCards.filter(c => c.idList === this.activeList.id);
         
-        // Filter available cards by search query (prefix match)
+        // Filter available cards by search query (prefix match, accent-insensitive)
         let availableCards = allStoreCards.filter(c => c.idList === this.allProductsList.id);
         if (this.searchQuery) {
-            const query = this.searchQuery.toLowerCase().trim();
+            const query = this.normalizeString(this.searchQuery.trim());
             availableCards = availableCards.filter(c => {
-                const name = c.name.toLowerCase();
+                const name = this.normalizeString(c.name);
                 // Match if any word in the product name starts with the query
                 const words = name.split(/\s+/);
                 return words.some(word => word.startsWith(query));
@@ -812,6 +822,7 @@ class TrelloShoppingApp {
         html += `
             <div class="search-container-inline">
                 <input type="text" class="search-input" id="product-search-inline" placeholder="Buscar producto..." value="${this.searchQuery || ''}">
+                <button type="button" class="search-clear-btn ${this.searchQuery ? 'visible' : ''}" id="search-clear-btn" aria-label="Limpiar búsqueda"></button>
             </div>
         `;
 
@@ -852,11 +863,16 @@ class TrelloShoppingApp {
 
         // Bind search input event
         const searchInput = document.getElementById('product-search-inline');
+        const clearBtn = document.getElementById('search-clear-btn');
         if (searchInput) {
             searchInput.addEventListener('input', (e) => {
                 const value = e.target.value;
                 clearTimeout(this.searchTimeout);
                 this.searchQuery = value;
+                // Toggle clear button visibility
+                if (clearBtn) {
+                    clearBtn.classList.toggle('visible', value.length > 0);
+                }
                 this.searchTimeout = setTimeout(() => {
                     this.renderStoreDetail(this.currentStore);
                     // Re-focus and set cursor position
@@ -866,6 +882,18 @@ class TrelloShoppingApp {
                         newInput.setSelectionRange(value.length, value.length);
                     }
                 }, 300);
+            });
+        }
+
+        // Bind clear button event
+        if (clearBtn) {
+            clearBtn.addEventListener('click', () => {
+                this.searchQuery = '';
+                this.renderStoreDetail(this.currentStore);
+                const newInput = document.getElementById('product-search-inline');
+                if (newInput) {
+                    newInput.focus();
+                }
             });
         }
 
