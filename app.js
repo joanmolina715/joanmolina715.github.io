@@ -783,15 +783,16 @@ class TrelloShoppingApp {
             });
 
             html += `
-                <div class="products-section">
+                <div class="products-section products-section-available">
                     <div class="products-section-title">Disponibles (${sortedAvailableCards.length})</div>
                     ${sortedAvailableCards.map(card => this.renderDetailProduct(card, false)).join('')}
                 </div>
             `;
-        } else if (this.searchQuery) {
+        } else {
+            // Empty section to maintain layout height
             html += `
-                <div class="empty-state" style="padding: 40px 20px;">
-                    <p style="color: var(--text-muted);">No se encontraron productos</p>
+                <div class="products-section products-section-available">
+                    ${this.searchQuery ? '<p style="color: var(--text-muted); padding: 40px 20px;">No se encontraron productos</p>' : ''}
                 </div>
             `;
         }
