@@ -278,69 +278,6 @@ class TrelloShoppingApp {
             }
         });
 
-        // Show/hide "Done" button when keyboard is active
-        this.setupKeyboardDoneButton();
-    }
-
-    setupKeyboardDoneButton() {
-        // Create the done button (hidden by default)
-        const doneBtn = document.createElement('button');
-        doneBtn.id = 'keyboard-done-btn';
-        doneBtn.textContent = 'Hecho';
-        doneBtn.style.cssText = `
-            position: fixed;
-            top: 12px;
-            right: 12px;
-            z-index: 1000;
-            padding: 8px 16px;
-            background: var(--primary);
-            color: white;
-            border: none;
-            border-radius: 8px;
-            font-size: 14px;
-            font-weight: 600;
-            display: none;
-            cursor: pointer;
-            -webkit-tap-highlight-color: transparent;
-        `;
-        document.body.appendChild(doneBtn);
-
-        // Use touchend for better mobile response (works on both iOS and Android)
-        doneBtn.addEventListener('touchend', (e) => {
-            e.preventDefault();
-            document.activeElement?.blur();
-        });
-        doneBtn.addEventListener('click', () => {
-            document.activeElement?.blur();
-        });
-
-        // Show button when input is focused
-        document.addEventListener('focusin', (e) => {
-            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
-                doneBtn.style.display = 'block';
-            }
-        });
-
-        // Hide button when input loses focus
-        document.addEventListener('focusout', (e) => {
-            // Small delay to allow clicking the done button
-            setTimeout(() => {
-                const active = document.activeElement;
-                if (active?.tagName !== 'INPUT' && active?.tagName !== 'TEXTAREA') {
-                    doneBtn.style.display = 'none';
-                }
-            }, 150);
-        });
-
-        // Handle Android keyboard visibility via visualViewport API
-        if (window.visualViewport) {
-            window.visualViewport.addEventListener('resize', () => {
-                const keyboardVisible = window.visualViewport.height < window.innerHeight * 0.75;
-                if (!keyboardVisible) {
-                    doneBtn.style.display = 'none';
-                }
-            });
-        }
     }
 
     // Modal state
