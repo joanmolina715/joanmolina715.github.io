@@ -822,16 +822,20 @@ class TrelloShoppingApp {
             });
         }
 
-        // Bind clear button event
+        // Bind clear button event (touchend for mobile, click for desktop)
         if (clearBtn) {
-            clearBtn.addEventListener('click', () => {
+            const clearSearch = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
                 this.searchQuery = '';
                 this.renderStoreDetail(this.currentStore);
                 const newInput = document.getElementById('product-search-inline');
                 if (newInput) {
                     newInput.focus();
                 }
-            });
+            };
+            clearBtn.addEventListener('touchend', clearSearch);
+            clearBtn.addEventListener('click', clearSearch);
         }
 
         // Add click handlers for products (check if click is on info button)

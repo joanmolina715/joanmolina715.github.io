@@ -415,18 +415,19 @@
 
         .search-clear-btn {
             position: absolute;
-            right: 12px;
-            top: 19px;
-            width: 20px;
-            height: 20px;
+            right: 4px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 44px;
+            height: 44px;
             border: none;
-            background: var(--text-muted);
-            border-radius: 50%;
+            background: transparent;
             cursor: pointer;
             display: none;
             align-items: center;
             justify-content: center;
             padding: 0;
+            -webkit-tap-highlight-color: transparent;
         }
 
         .search-clear-btn::before,
@@ -435,7 +436,7 @@
             position: absolute;
             width: 10px;
             height: 2px;
-            background: var(--card);
+            background: var(--text-muted);
         }
 
         .search-clear-btn::before {
