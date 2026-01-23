@@ -354,6 +354,7 @@
             background: var(--bg-secondary);
             border-bottom: 1px solid var(--border);
             padding: 12px 20px;
+            padding-top: calc(12px + env(safe-area-inset-top, 0px));
             position: sticky;
             top: 0;
             z-index: 100;
@@ -1152,6 +1153,7 @@
             background: var(--bg-secondary);
             border-bottom: 1px solid var(--border);
             padding: 16px 20px;
+            padding-top: calc(16px + env(safe-area-inset-top, 0px));
             display: flex;
             align-items: center;
             gap: 16px;
