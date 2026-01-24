@@ -1039,6 +1039,7 @@ class TrelloShoppingApp {
         const content = document.getElementById('product-detail-content');
 
         modal.classList.remove('hidden');
+        document.body.style.overflow = 'hidden';
         content.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando...</p></div>';
 
         try {
@@ -1372,6 +1373,7 @@ class TrelloShoppingApp {
 
     closeProductDetail() {
         document.getElementById('product-detail-modal').classList.add('hidden');
+        document.body.style.overflow = '';
     }
 
     async toggleProduct(cardId) {
@@ -1712,11 +1714,17 @@ class TrelloShoppingApp {
         `;
 
         document.body.appendChild(modal);
+        document.body.style.overflow = 'hidden';
+
+        const closeModal = () => {
+            modal.remove();
+            document.body.style.overflow = '';
+        };
 
         // Bind events
-        document.getElementById('settings-close').addEventListener('click', () => modal.remove());
+        document.getElementById('settings-close').addEventListener('click', closeModal);
         modal.addEventListener('click', (e) => {
-            if (e.target === modal) modal.remove();
+            if (e.target === modal) closeModal();
         });
 
         document.getElementById('settings-import-export').addEventListener('click', () => {
@@ -1735,7 +1743,7 @@ class TrelloShoppingApp {
         });
 
         document.getElementById('settings-logout').addEventListener('click', () => {
-            modal.remove();
+            closeModal();
             this.logout();
         });
     }
@@ -1931,6 +1939,7 @@ class TrelloShoppingApp {
         document.getElementById('product-name').value = '';
         document.getElementById('product-description').value = '';
         document.getElementById('add-modal').classList.remove('hidden');
+        document.body.style.overflow = 'hidden';
 
         // Reset image upload area
         const uploadArea = document.getElementById('image-upload-area');
@@ -2003,6 +2012,7 @@ class TrelloShoppingApp {
 
     closeAddModal() {
         document.getElementById('add-modal').classList.add('hidden');
+        document.body.style.overflow = '';
     }
 
     renderLabelPickers() {

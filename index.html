@@ -631,6 +631,9 @@
             display: flex;
             align-items: flex-end;
             justify-content: center;
+            overflow: hidden;
+            overscroll-behavior: contain;
+            -webkit-overflow-scrolling: touch;
         }
 
         .modal {
@@ -641,6 +644,8 @@
             padding: 24px;
             max-height: 90vh;
             overflow-y: auto;
+            overscroll-behavior: contain;
+            -webkit-overflow-scrolling: touch;
             animation: slideUp 0.3s ease;
         }
 
