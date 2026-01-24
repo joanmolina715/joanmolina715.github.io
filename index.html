@@ -209,7 +209,8 @@
             background: var(--bg-secondary);
             border-bottom: 1px solid var(--border);
             padding: 16px 20px;
-            padding-top: calc(16px + env(safe-area-inset-top, 0px));
+            padding-top: calc(16px + constant(safe-area-inset-top));
+            padding-top: calc(16px + env(safe-area-inset-top));
             position: sticky;
             top: 0;
             z-index: 100;
@@ -354,7 +355,8 @@
             background: var(--bg-secondary);
             border-bottom: 1px solid var(--border);
             padding: 12px 20px;
-            padding-top: calc(12px + env(safe-area-inset-top, 0px));
+            padding-top: calc(12px + constant(safe-area-inset-top));
+            padding-top: calc(12px + env(safe-area-inset-top));
             position: sticky;
             top: 0;
             z-index: 100;
@@ -956,6 +958,7 @@
         .shopping-selector-content {
             flex: 1;
             padding: 24px 20px;
+            padding-bottom: calc(24px + env(safe-area-inset-bottom));
         }
 
         .shopping-selector-title {
@@ -1145,15 +1148,18 @@
 
         /* Shopping Mode */
         .shopping-view {
-            min-height: 100vh;
+            min-height: 100dvh;
             background: var(--bg);
+            padding-top: env(safe-area-inset-top);
+            padding-bottom: env(safe-area-inset-bottom);
         }
 
         .shopping-header {
             background: var(--bg-secondary);
             border-bottom: 1px solid var(--border);
             padding: 16px 20px;
-            padding-top: calc(16px + env(safe-area-inset-top, 0px));
+            padding-top: calc(16px + constant(safe-area-inset-top));
+            padding-top: calc(16px + env(safe-area-inset-top));
             display: flex;
             align-items: center;
             gap: 16px;
