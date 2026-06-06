@@ -4,6 +4,121 @@
  *
  * Board Structure:
  * - List 1: "Todos los Productos" (All products as cards)
+ * - List 2: "Lista Activa" (Products to buy)
+ * - Dictionary lists for V2 tag system
+ */
+
+// ==================== Tag System V2 Lookup & Active City Helpers ====================
+
+// Lookup functions for dictionaries (expects parsed arrays)
+function getCityName(cityCode, cityDict) {
+    const entry = cityDict.find(c => c.code === cityCode);
+    return entry ? entry.name : '';
+}
+
+// ========== Shopping Mode Floor Selector Handler ==========
+// Call this when entering shopping mode and a multi-floor shop is selected
+window.renderFloorSelector = function(totalFloors, currentFloor) {
+    const selector = document.getElementById('shopping-mode-floor-selector');
+    if (!selector) return;
+    selector.innerHTML = '';
+    if (!totalFloors || totalFloors < 2) {
+        selector.style.display = 'none';
+        return;
+    }
+    selector.style.display = '';
+    const label = document.createElement('label');
+    label.textContent = 'Planta:';
+    label.style.marginRight = '8px';
+    selector.appendChild(label);
+    const select = document.createElement('select');
+    select.id = 'floor-select';
+    for (let i = 0; i < totalFloors; i++) {
+        const opt = document.createElement('option');
+        opt.value = String(i).padStart(2, '0');
+        opt.textContent = i === 0 ? 'Baja' : String(i);
+        if (opt.value === currentFloor) opt.selected = true;
+        select.appendChild(opt);
+    }
+    selector.appendChild(select);
+    select.addEventListener('change', () => {
+        if (window.app && typeof window.app.onFloorChange === 'function') {
+            window.app.onFloorChange(select.value);
+        }
+    });
+};
+
+// ========== City Selector UI Handler ==========
+document.addEventListener('DOMContentLoaded', () => {
+    const citySelector = document.getElementById('city-selector');
+    if (!citySelector) return;
+    // Populate city selector from localStorage or app cache
+    function updateCitySelector() {
+        // Try to get cities from app instance if available
+        let cities = [];
+        if (window.app && window.app.cities && window.app.cities.length) {
+            cities = window.app.cities;
+        } else {
+            // fallback: try from localStorage
+            try {
+                const saved = localStorage.getItem('cities_cache');
+                if (saved) cities = JSON.parse(saved);
+            } catch {}
+        }
+        citySelector.innerHTML = '';
+        cities.forEach(city => {
+            const opt = document.createElement('option');
+            opt.value = city.code;
+            opt.textContent = city.name;
+            citySelector.appendChild(opt);
+        });
+        // Set current value
+        const active = localStorage.getItem('activeCity') || (cities[0] && cities[0].code) || '00';
+        citySelector.value = active;
+    }
+    updateCitySelector();
+    citySelector.addEventListener('change', () => {
+        localStorage.setItem('activeCity', citySelector.value);
+        // Optionally trigger app re-render or reload
+        if (window.app && typeof window.app.onCityChange === 'function') {
+            window.app.onCityChange(citySelector.value);
+        } else {
+            location.reload();
+        }
+    });
+    // Expose for app to call after Trello load
+    window.updateCitySelector = updateCitySelector;
+});
+
+function getShopInfo(cityCode, shopCode, shopDict) {
+    return shopDict.find(s => s.cityCode === cityCode && s.shopCode === shopCode) || null;
+}
+
+function getRoomName(cityCode, roomCode, roomDict) {
+    const entry = roomDict.find(r => r.cityCode === cityCode && r.roomCode === roomCode);
+    return entry ? entry.name : '';
+}
+
+function getClosetName(cityCode, roomCode, closetCode, closetDict) {
+    const entry = closetDict.find(c => c.cityCode === cityCode && c.roomCode === roomCode && c.closetCode === closetCode);
+    return entry ? entry.name : '';
+}
+
+// Active city helpers
+function getActiveCity() {
+    return localStorage.getItem('activeCity') || '00';
+}
+
+function setActiveCity(code) {
+    localStorage.setItem('activeCity', code);
+}
+
+/*
+ * Trello Shopping List App
+ * Version: 2.1.0 (2026-01-16)
+ *
+ * Board Structure:
+ * - List 1: "Todos los Productos" (All products as cards)
  * - List 2: "Lista Activa" (Products currently on shopping list)
  *
  * Labels:
@@ -16,10 +131,16 @@
 
 // Configuration Seed (File A) - Initial default values, used only on first launch
 const CONFIG_SEED = {
+    version: 2,
     listNames: {
         allProducts: 'Todos los Productos',
-        activeList: 'Lista Activa'
+        activeList: 'Lista Activa',
+        dictCities: 'Diccionario ciudades',
+        dictShops: 'Diccionario tienda',
+        dictRooms: 'Diccionario habitacion',
+        dictClosets: 'Diccionario armarios'
     },
+    // Legacy store/location config (for backwards compatibility during migration)
     stores: [
         { name: 'Mercadona', color: 'orange', icon: '🛒' },
         { name: 'Fruteria', color: 'lime', icon: '🍎' },
@@ -43,6 +164,119 @@ const CONFIG_SEED = {
         // Lavabo
         { name: 'Lavabo', color: 'purple' }
     ]
+};
+
+// ==================== Tag System V2 Helper Functions ====================
+
+/**
+ * Tag Format: XX_YY_ZZ_TT_RR
+ * - XX: City code (00-99)
+ * - YY: Shop code (00-99)
+ * - ZZ: Floor number (00-99, 00=ground floor)
+ * - TT: Room code (00-98, 99=unspecified)
+ * - RR: Closet code (00-98, 99=unspecified)
+ */
+
+const TagSystem = {
+    UNSPECIFIED: '99',
+
+    // Encode components into a tag string
+    encodeTag(city, shop, floor, room = '99', closet = '99') {
+        const pad = (n) => String(n).padStart(2, '0');
+        return `${pad(city)}_${pad(shop)}_${pad(floor)}_${pad(room)}_${pad(closet)}`;
+    },
+
+    // Decode a tag string into components
+    decodeTag(tagCode) {
+        if (!this.isValidTag(tagCode)) {
+            return null;
+        }
+        const parts = tagCode.split('_');
+        return {
+            city: parts[0],
+            shop: parts[1],
+            floor: parts[2],
+            room: parts[3],
+            closet: parts[4],
+            hasRoom: parts[3] !== '99',
+            hasCloset: parts[4] !== '99'
+        };
+    },
+
+    // Validate tag format
+    isValidTag(tagCode) {
+        if (!tagCode || typeof tagCode !== 'string') return false;
+        const regex = /^\d{2}_\d{2}_\d{2}_\d{2}_\d{2}$/;
+        return regex.test(tagCode);
+    },
+
+    // Parse city dictionary card: "XX-City Name"
+    parseCityCard(cardName) {
+        const match = cardName.match(/^(\d{2})-(.+)$/);
+        if (!match) return null;
+        return {
+            code: match[1],
+            name: match[2].trim()
+        };
+    },
+
+    // Parse shop dictionary card: "XX-YY-ZZZ-Shop Name"
+    // ZZZ format: first digit 0/1 (single/multi floor) + 2 digits total floors
+    parseShopCard(cardName) {
+        const match = cardName.match(/^(\d{2})-(\d{2})-(\d)(\d{2})-(.+)$/);
+        if (!match) return null;
+        return {
+            cityCode: match[1],
+            shopCode: match[2],
+            isMultiFloor: match[3] === '1',
+            totalFloors: parseInt(match[4], 10),
+            name: match[5].trim()
+        };
+    },
+
+    // Parse room dictionary card: "XX-TT-Room Name"
+    parseRoomCard(cardName) {
+        const match = cardName.match(/^(\d{2})-(\d{2})-(.+)$/);
+        if (!match) return null;
+        return {
+            cityCode: match[1],
+            roomCode: match[2],
+            name: match[3].trim()
+        };
+    },
+
+    // Parse closet dictionary card: "XX-TT-RR-Closet Name"
+    parseClosetCard(cardName) {
+        const match = cardName.match(/^(\d{2})-(\d{2})-(\d{2})-(.+)$/);
+        if (!match) return null;
+        return {
+            cityCode: match[1],
+            roomCode: match[2],
+            closetCode: match[3],
+            name: match[4].trim()
+        };
+    },
+
+    // Format city card name
+    formatCityCard(code, name) {
+        return `${String(code).padStart(2, '0')}-${name}`;
+    },
+
+    // Format shop card name
+    formatShopCard(cityCode, shopCode, isMultiFloor, totalFloors, name) {
+        const floorInfo = `${isMultiFloor ? '1' : '0'}${String(totalFloors).padStart(2, '0')}`;
+        return `${String(cityCode).padStart(2, '0')}-${String(shopCode).padStart(2, '0')}-${floorInfo}-${name}`;
+    },
+
+    // Format room card name
+    formatRoomCard(cityCode, roomCode, name) {
+        return `${String(cityCode).padStart(2, '0')}-${String(roomCode).padStart(2, '0')}-${name}`;
+    },
+
+    // Format closet card name
+    formatClosetCard(cityCode, roomCode, closetCode, name) {
+        return `${String(cityCode).padStart(2, '0')}-${String(roomCode).padStart(2, '0')}-${String(closetCode).padStart(2, '0')}-${name}`;
+    }
 };
 
 class TrelloShoppingApp {
@@ -70,13 +304,30 @@ class TrelloShoppingApp {
         this.cards = [];
         this.labels = [];
 
+        // Dictionary lists (V2 tag system)
+        this.dictCitiesList = null;
+        this.dictShopsList = null;
+        this.dictRoomsList = null;
+        this.dictClosetsList = null;
+
+        // Dictionary caches (populated from Trello cards)
+        this.cities = [];      // [{code, name, color?}]
+        this.shops = [];       // [{cityCode, shopCode, name, isMultiFloor, totalFloors, color?, icon?}]
+        this.rooms = [];       // [{cityCode, roomCode, name, color?}]
+        this.closets = [];     // [{cityCode, roomCode, closetCode, name}]
+
+        // Active city (stored in localStorage)
+        this.activeCity = localStorage.getItem('active_city') || null;
+
         // Load configuration (File B) - Active config from localStorage, or copy from seed if first time
         this.config = this.loadConfig();
 
         // New state for card-based navigation
         this.currentView = 'stores'; // 'stores', 'detail', or 'shopping'
         this.currentStore = null;
-        this.selectedStore = null; // For shopping mode
+        this.selectedStore = null; // For shopping mode (legacy label)
+        this.selectedV2Shop = null; // For shopping mode (V2 shop from dictionary)
+        this.selectedFloor = 'all'; // For multi-floor shops: 'all' or floor number '00', '01', etc.
         this.searchQuery = '';
         this.searchTimeout = null; // For debouncing search
 
@@ -222,14 +473,22 @@ class TrelloShoppingApp {
     }
 
     bindEvents() {
+        console.log('🔗 bindEvents() iniciando...');
         // Use passive listeners for better scroll performance
         const passiveOpts = { passive: true };
 
         // Login form submission
-        document.getElementById('login-form').addEventListener('submit', (e) => {
-            e.preventDefault();
-            this.handleLogin();
-        });
+        const loginForm = document.getElementById('login-form');
+        if (loginForm) {
+            loginForm.addEventListener('submit', (e) => {
+                e.preventDefault();
+                console.log('📝 Form submit detected');
+                this.handleLogin();
+            });
+            console.log('✅ Login form event bound');
+        } else {
+            console.error('❌ login-form not found!');
+        }
 
         // Board selection
         document.getElementById('create-board-btn')?.addEventListener('click', () => this.createNewBoard());
@@ -245,12 +504,14 @@ class TrelloShoppingApp {
         document.getElementById('shopping-mode-btn')?.addEventListener('click', () => this.showShoppingMode());
 
         // Enter key on inputs
-        document.getElementById('api-key').addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') document.getElementById('api-token').focus();
+        document.getElementById('api-key')?.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') document.getElementById('api-token')?.focus();
         });
-        document.getElementById('api-token').addEventListener('keypress', (e) => {
+        document.getElementById('api-token')?.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') this.handleLogin();
         });
+
+        console.log('🔗 bindEvents() completado');
 
         // Add product modal
         document.getElementById('add-product-detail-btn')?.addEventListener('click', () => this.openAddModal());
@@ -328,7 +589,7 @@ class TrelloShoppingApp {
     }
 
     async getBoard(boardId) {
-        return this.trelloFetch(`/boards/${boardId}?fields=name,url,prefs`);
+        return this.trelloFetch(`/boards/${boardId}?fields=id,name,url,prefs`);
     }
 
     async getLists(boardId) {
@@ -347,36 +608,11 @@ class TrelloShoppingApp {
         return this.trelloFetch(`/boards/${boardId}/labels?fields=name,color`);
     }
 
-    async createBoard(name) {
-        return this.trelloFetch('/boards', {
-            method: 'POST',
-            body: JSON.stringify({
-                name,
-                defaultLists: false
-            })
-        });
-    }
-
-    async createList(boardId, name, pos) {
-        return this.trelloFetch('/lists', {
-            method: 'POST',
-            body: JSON.stringify({
-                name,
-                idBoard: boardId,
-                pos
-            })
-        });
-    }
-
-    async createLabel(boardId, name, color) {
-        return this.trelloFetch('/labels', {
-            method: 'POST',
-            body: JSON.stringify({
-                name,
-                color,
-                idBoard: boardId
-            })
-        });
+    async createLabel(boardId, name, color = 'black') {
+        // Trello requires a color for labels - default to 'black' for V2 tags
+        const labelColor = color || 'black';
+        const endpoint = `/labels?idBoard=${boardId}&name=${encodeURIComponent(name)}&color=${labelColor}`;
+        return this.trelloFetch(endpoint, { method: 'POST' });
     }
 
     async createCard(listId, name, labelIds = [], desc = '') {
@@ -467,6 +703,8 @@ class TrelloShoppingApp {
             localStorage.setItem('trello_api_key', apiKey);
             localStorage.setItem('trello_api_token', apiToken);
 
+            // Mostrar selector de tableros tras login
+            this.showScreen('board-selector');
             await this.loadBoards();
         } catch (error) {
             console.error('❌ Error de autenticación:', error);
@@ -545,8 +783,26 @@ class TrelloShoppingApp {
             this.allProductsList = lists.find(l => l.name === this.config.listNames.allProducts);
             this.activeList = lists.find(l => l.name === this.config.listNames.activeList);
 
-            if (!this.allProductsList || !this.activeList) {
+            // Find dictionary lists (V2 tag system)
+            this.dictCitiesList = lists.find(l => l.name === this.config.listNames.dictCities);
+            this.dictShopsList = lists.find(l => l.name === this.config.listNames.dictShops);
+            this.dictRoomsList = lists.find(l => l.name === this.config.listNames.dictRooms);
+            this.dictClosetsList = lists.find(l => l.name === this.config.listNames.dictClosets);
+
+            // Create missing lists
+            if (!this.allProductsList || !this.activeList ||
+                !this.dictCitiesList || !this.dictShopsList ||
+                !this.dictRoomsList || !this.dictClosetsList) {
                 await this.setupBoardStructure();
+            }
+
+            // Load dictionaries from cards
+            this.loadDictionaries();
+
+            // Set default active city if not set
+            if (!this.activeCity && this.cities.length > 0) {
+                this.activeCity = this.cities[0].code;
+                localStorage.setItem('active_city', this.activeCity);
             }
 
             this.showStoreCards();
@@ -554,6 +810,149 @@ class TrelloShoppingApp {
         } catch (error) {
             this.showToast('Error cargando tablero: ' + error.message);
         }
+    }
+
+    // Load dictionaries from Trello cards into caches
+    loadDictionaries() {
+        this.cities = [];
+        this.shops = [];
+        this.rooms = [];
+        this.closets = [];
+
+        // Load cities
+        if (this.dictCitiesList) {
+            const cityCards = this.cards.filter(c => c.idList === this.dictCitiesList.id);
+            for (const card of cityCards) {
+                const parsed = TagSystem.parseCityCard(card.name);
+                if (parsed) {
+                    // Get color from card labels if present
+                    const cardLabel = card.idLabels.length > 0 ?
+                        this.labels.find(l => l.id === card.idLabels[0]) : null;
+                    this.cities.push({
+                        ...parsed,
+                        color: cardLabel?.color || 'blue',
+                        cardId: card.id
+                    });
+                }
+            }
+        }
+
+        // Load shops
+        if (this.dictShopsList) {
+            const shopCards = this.cards.filter(c => c.idList === this.dictShopsList.id);
+            for (const card of shopCards) {
+                const parsed = TagSystem.parseShopCard(card.name);
+                if (parsed) {
+                    const cardLabel = card.idLabels.length > 0 ?
+                        this.labels.find(l => l.id === card.idLabels[0]) : null;
+                    // Get icon from card description if present
+                    const iconMatch = card.desc?.match(/^icon:(.+)$/m);
+                    this.shops.push({
+                        ...parsed,
+                        color: cardLabel?.color || 'orange',
+                        icon: iconMatch ? iconMatch[1].trim() : '🏪',
+                        cardId: card.id
+                    });
+                }
+            }
+        }
+
+        // Load rooms
+        if (this.dictRoomsList) {
+            const roomCards = this.cards.filter(c => c.idList === this.dictRoomsList.id);
+            for (const card of roomCards) {
+                const parsed = TagSystem.parseRoomCard(card.name);
+                if (parsed) {
+                    const cardLabel = card.idLabels.length > 0 ?
+                        this.labels.find(l => l.id === card.idLabels[0]) : null;
+                    this.rooms.push({
+                        ...parsed,
+                        color: cardLabel?.color || 'green',
+                        cardId: card.id
+                    });
+                }
+            }
+        }
+
+        // Load closets
+        if (this.dictClosetsList) {
+            const closetCards = this.cards.filter(c => c.idList === this.dictClosetsList.id);
+            for (const card of closetCards) {
+                const parsed = TagSystem.parseClosetCard(card.name);
+                if (parsed) {
+                    this.closets.push({
+                        ...parsed,
+                        cardId: card.id
+                    });
+                }
+            }
+        }
+
+        console.log('📚 Diccionarios cargados:', {
+            cities: this.cities.length,
+            shops: this.shops.length,
+            rooms: this.rooms.length,
+            closets: this.closets.length
+        });
+    }
+
+    // Lookup functions for dictionaries
+    getCityName(cityCode) {
+        const city = this.cities.find(c => c.code === cityCode);
+        return city?.name || `Ciudad ${cityCode}`;
+    }
+
+    getShopInfo(cityCode, shopCode) {
+        return this.shops.find(s => s.cityCode === cityCode && s.shopCode === shopCode) || null;
+    }
+
+    getShopsByCity(cityCode) {
+        return this.shops.filter(s => s.cityCode === cityCode);
+    }
+
+    getRoomName(cityCode, roomCode) {
+        const room = this.rooms.find(r => r.cityCode === cityCode && r.roomCode === roomCode);
+        return room?.name || (roomCode === '99' ? 'Sin habitación' : `Habitación ${roomCode}`);
+    }
+
+    getRoomsByCity(cityCode) {
+        return this.rooms.filter(r => r.cityCode === cityCode);
+    }
+
+    getClosetName(cityCode, roomCode, closetCode) {
+        const closet = this.closets.find(c =>
+            c.cityCode === cityCode && c.roomCode === roomCode && c.closetCode === closetCode
+        );
+        return closet?.name || (closetCode === '99' ? 'Sin armario' : `Armario ${closetCode}`);
+    }
+
+    getClosetsByRoom(cityCode, roomCode) {
+        return this.closets.filter(c => c.cityCode === cityCode && c.roomCode === roomCode);
+    }
+
+    // Get human-readable location string from tag
+    getTagLocationString(tagCode) {
+        const decoded = TagSystem.decodeTag(tagCode);
+        if (!decoded) return 'Ubicación inválida';
+
+        const shopInfo = this.getShopInfo(decoded.city, decoded.shop);
+        const shopName = shopInfo?.name || `Tienda ${decoded.shop}`;
+
+        let location = shopName;
+
+        if (shopInfo?.isMultiFloor) {
+            location += ` (Planta ${parseInt(decoded.floor, 10)})`;
+        }
+
+        if (decoded.hasRoom) {
+            location += ` → ${this.getRoomName(decoded.city, decoded.room)}`;
+        }
+
+        if (decoded.hasCloset) {
+            location += ` → ${this.getClosetName(decoded.city, decoded.room, decoded.closet)}`;
+        }
+
+        return location;
     }
 
     async setupBoardStructure() {
@@ -568,7 +967,28 @@ class TrelloShoppingApp {
             this.lists.push(this.activeList);
         }
 
-        // Create default location labels if none exist
+        // Create dictionary lists (V2 tag system)
+        if (!this.dictCitiesList) {
+            this.dictCitiesList = await this.createList(this.selectedBoardId, this.config.listNames.dictCities, 3);
+            this.lists.push(this.dictCitiesList);
+        }
+
+        if (!this.dictShopsList) {
+            this.dictShopsList = await this.createList(this.selectedBoardId, this.config.listNames.dictShops, 4);
+            this.lists.push(this.dictShopsList);
+        }
+
+        if (!this.dictRoomsList) {
+            this.dictRoomsList = await this.createList(this.selectedBoardId, this.config.listNames.dictRooms, 5);
+            this.lists.push(this.dictRoomsList);
+        }
+
+        if (!this.dictClosetsList) {
+            this.dictClosetsList = await this.createList(this.selectedBoardId, this.config.listNames.dictClosets, 6);
+            this.lists.push(this.dictClosetsList);
+        }
+
+        // Create default location labels if none exist (legacy support)
         const locationLabels = this.labels.filter(l => ['green', 'blue', 'purple', 'sky', 'lime', 'pink'].includes(l.color));
 
         if (locationLabels.length === 0) {
@@ -578,7 +998,7 @@ class TrelloShoppingApp {
             }
         }
 
-        // Create default store labels if none exist
+        // Create default store labels if none exist (legacy support)
         const storeLabels = this.labels.filter(l => ['orange', 'red', 'yellow', 'black'].includes(l.color));
 
         if (storeLabels.length === 0) {
@@ -612,20 +1032,62 @@ class TrelloShoppingApp {
     showStoreCards() {
         this.currentView = 'stores';
         this.searchQuery = '';
-        
+
         document.getElementById('store-cards-view').classList.remove('hidden');
         document.getElementById('store-detail-view').classList.add('hidden');
         document.getElementById('shopping-mode-view').classList.add('hidden');
-        
+
         // Scroll to top when returning to main view
         window.scrollTo(0, 0);
-        
+
+        // Populate city selector
+        this.populateCitySelector();
+
         this.renderStoreCards();
+    }
+
+    populateCitySelector() {
+        const selector = document.getElementById('city-selector');
+        const container = document.getElementById('city-selector-container');
+        if (!selector) return;
+
+        // Clear existing options
+        selector.innerHTML = '';
+
+        if (this.cities.length === 0) {
+            selector.innerHTML = '<option value="">Sin ciudades</option>';
+            if (container) container.style.display = 'none';
+            return;
+        }
+
+        if (container) container.style.display = 'flex';
+
+        // Add city options
+        this.cities.forEach(city => {
+            const option = document.createElement('option');
+            option.value = city.code;
+            option.textContent = city.name;
+            if (city.code === this.activeCity) {
+                option.selected = true;
+            }
+            selector.appendChild(option);
+        });
+
+        // Bind change event (remove old listener first)
+        const newSelector = selector.cloneNode(true);
+        selector.parentNode.replaceChild(newSelector, selector);
+
+        newSelector.addEventListener('change', (e) => {
+            this.activeCity = e.target.value;
+            localStorage.setItem('active_city', this.activeCity);
+            this.renderStoreCards();
+        });
     }
 
     showStoreDetail(storeLabel) {
         this.currentView = 'detail';
         this.currentStore = storeLabel;
+        this.selectedV2Shop = null;
         this.searchQuery = '';
 
         document.getElementById('store-cards-view').classList.add('hidden');
@@ -637,73 +1099,190 @@ class TrelloShoppingApp {
         this.renderStoreDetail(storeLabel);
     }
 
+    showV2StoreDetail(shop) {
+        this.currentView = 'detail';
+        this.currentStore = null;
+        this.selectedV2Shop = shop;
+        this.searchQuery = '';
+
+        document.getElementById('store-cards-view').classList.add('hidden');
+        document.getElementById('shopping-mode-view').classList.add('hidden');
+        document.getElementById('store-detail-view').classList.remove('hidden');
+
+        document.getElementById('store-detail-title').textContent = shop.name;
+
+        this.renderV2StoreDetail(shop);
+    }
+
+    renderV2StoreDetail(shop) {
+        const container = document.getElementById('products-container');
+
+        if (!this.activeList || !this.allProductsList) {
+            container.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando productos...</p></div>';
+            return;
+        }
+
+        const tagPrefix = `${shop.cityCode}_${shop.shopCode}_`;
+
+        // Get products with V2 tags for this shop
+        const shopProducts = this.cards.filter(card => {
+            return card.idLabels.some(labelId => {
+                const label = this.labels.find(l => l.id === labelId);
+                return label && TagSystem.isValidTag(label.name) && label.name.startsWith(tagPrefix);
+            });
+        });
+
+        // Separate active and inactive products
+        const activeProducts = shopProducts.filter(c => c.idList === this.activeList.id);
+        const inactiveProducts = shopProducts.filter(c => c.idList !== this.activeList.id);
+
+        if (shopProducts.length === 0) {
+            container.innerHTML = `
+                <div class="empty-state" style="padding: 40px 20px;">
+                    <div style="font-size: 48px; margin-bottom: 16px;">📦</div>
+                    <p>No hay productos en ${shop.name}</p>
+                    <p style="font-size: 13px; color: var(--text-muted); margin-top: 8px;">
+                        Usa el botón + para añadir productos
+                    </p>
+                </div>
+            `;
+            return;
+        }
+
+        let html = '';
+
+        // Active products section
+        if (activeProducts.length > 0) {
+            html += `<div class="products-section"><div class="section-title">En la lista (${activeProducts.length})</div>`;
+            html += activeProducts.map(card => this.renderDetailProduct(card, true)).join('');
+            html += '</div>';
+        }
+
+        // Inactive products section
+        if (inactiveProducts.length > 0) {
+            html += `<div class="products-section"><div class="section-title">Otros productos (${inactiveProducts.length})</div>`;
+            html += inactiveProducts.map(card => this.renderDetailProduct(card, false)).join('');
+            html += '</div>';
+        }
+
+        container.innerHTML = html;
+        this.attachProductCardListeners();
+    }
+
+    attachProductCardListeners() {
+        const container = document.getElementById('products-container');
+
+        // Add click handlers for products (check if click is on info button)
+        container.querySelectorAll('.detail-product').forEach(productDiv => {
+            productDiv.addEventListener('click', (e) => {
+                // Don't toggle if clicking on info button
+                if (e.target.closest('.product-info-btn')) {
+                    return;
+                }
+                const cardId = productDiv.dataset.cardId;
+                this.toggleProduct(cardId);
+            });
+        });
+
+        // Add info button handlers
+        container.querySelectorAll('.product-info-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const cardId = btn.dataset.cardId;
+                this.showProductDetail(cardId);
+            });
+        });
+
+        // Load thumbnails asynchronously
+        this.loadProductThumbnails();
+    }
+
     renderStoreCards() {
         const container = document.getElementById('store-cards-container');
-        
+
         if (!this.activeList) {
             container.innerHTML = '<div class="loading"><div class="spinner"></div><p>Configurando listas...</p></div>';
             return;
         }
 
-        // Get store labels
-        const storeNames = this.getStoreNames();
-        const storeLabels = this.labels.filter(l => storeNames.includes(l.name));
+        // Get V2 shops for active city
+        const v2Shops = this.activeCity ? this.getShopsByCity(this.activeCity) : [];
 
-        if (storeLabels.length === 0) {
-            container.innerHTML = '<div class="empty-state"><p>No hay tiendas configuradas</p></div>';
+        if (v2Shops.length === 0) {
+            // Check if there's no active city or no shops
+            if (!this.activeCity || this.cities.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">🏙️</div>
+                        <p style="font-size: 16px; margin-bottom: 8px;">Configura tu primera ciudad</p>
+                        <p style="font-size: 14px; opacity: 0.7; margin-bottom: 16px;">Añade ciudades y tiendas para empezar</p>
+                        <button class="btn btn-primary" id="open-dict-from-empty">Configurar</button>
+                    </div>
+                `;
+                container.querySelector('#open-dict-from-empty')?.addEventListener('click', () => this.showDictionaryModal());
+            } else {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">🏪</div>
+                        <p style="font-size: 16px; margin-bottom: 8px;">No hay tiendas</p>
+                        <p style="font-size: 14px; opacity: 0.7; margin-bottom: 16px;">Añade tiendas en ${this.getCityName(this.activeCity)}</p>
+                        <button class="btn btn-primary" id="open-dict-from-empty">Añadir Tienda</button>
+                    </div>
+                `;
+                container.querySelector('#open-dict-from-empty')?.addEventListener('click', () => this.showDictionaryModal());
+            }
             return;
         }
 
-        // Count products per store in active list and total
-        const storeCounts = {};
-        const storeTotals = {};
-        storeLabels.forEach(label => {
-            // Count active products (in Lista Activa)
-            const activeCount = this.cards.filter(c => 
-                c.idList === this.activeList.id && 
-                c.idLabels.includes(label.id)
-            ).length;
-            
-            // Count total products (in any list with this store label)
-            const totalCount = this.cards.filter(c => 
-                c.idLabels.includes(label.id)
-            ).length;
-            
-            storeCounts[label.id] = activeCount;
-            storeTotals[label.id] = totalCount;
+        // Count products per V2 shop
+        const shopCounts = v2Shops.map(shop => {
+            const tagPrefix = `${this.activeCity}_${shop.shopCode}_`;
+
+            // Find products with V2 tags matching this shop
+            const shopProducts = this.cards.filter(card => {
+                return card.idLabels.some(labelId => {
+                    const label = this.labels.find(l => l.id === labelId);
+                    return label && TagSystem.isValidTag(label.name) && label.name.startsWith(tagPrefix);
+                });
+            });
+
+            const activeCount = shopProducts.filter(c => c.idList === this.activeList.id).length;
+            const totalCount = shopProducts.length;
+
+            return { shop, activeCount, totalCount };
         });
 
-        // Sort stores by active products count (descending)
-        const sortedStoreLabels = [...storeLabels].sort((a, b) => {
-            return storeCounts[b.id] - storeCounts[a.id];
-        });
+        // Sort by active count descending
+        shopCounts.sort((a, b) => b.activeCount - a.activeCount);
 
-        let html = sortedStoreLabels.map(label => {
-            const activeCount = storeCounts[label.id];
-            const totalCount = storeTotals[label.id];
-            const icon = this.getStoreIcon(label.name);
-            const countText = totalCount === 1 ? `${activeCount}/1 producto` : `${activeCount}/${totalCount} productos`;
+        let html = shopCounts.map(({ shop, activeCount, totalCount }) => {
+            const countText = totalCount === 0 ? 'Sin productos' :
+                (totalCount === 1 ? `${activeCount}/1 producto` : `${activeCount}/${totalCount} productos`);
+            const floorInfo = shop.isMultiFloor ? ` · ${shop.totalFloors} plantas` : '';
 
             return `
-                <div class="store-card" data-store-id="${label.id}" style="border-left: 4px solid #${label.color};">
+                <div class="store-card" data-shop-code="${shop.shopCode}" data-city-code="${shop.cityCode}">
+                    <div class="store-card-icon">${shop.icon || '🏪'}</div>
                     <div class="store-card-content">
-                        <div class="store-card-name">${label.name}</div>
-                        <div class="store-card-count">${countText}</div>
+                        <div class="store-card-name">${shop.name}</div>
+                        <div class="store-card-count">${countText}${floorInfo}</div>
                     </div>
-                    <div class="store-card-icon">${icon}</div>
+                    <span class="store-card-arrow">›</span>
                 </div>
             `;
         }).join('');
 
         container.innerHTML = html;
 
-        // Add click handlers
+        // Add click handlers for V2 shops
         container.querySelectorAll('.store-card').forEach(card => {
             card.addEventListener('click', () => {
-                const storeId = card.dataset.storeId;
-                const storeLabel = storeLabels.find(l => l.id === storeId);
-                if (storeLabel) {
-                    this.showStoreDetail(storeLabel);
+                const shopCode = card.dataset.shopCode;
+                const cityCode = card.dataset.cityCode;
+                const shop = v2Shops.find(s => s.shopCode === shopCode && s.cityCode === cityCode);
+                if (shop) {
+                    this.showV2StoreDetail(shop);
                 }
             });
         });
@@ -1137,6 +1716,10 @@ class TrelloShoppingApp {
         const card = this.cards.find(c => c.id === cardId);
         if (!card) return;
 
+        // Initialize pending changes for edit mode
+        this.pendingEditImage = null;
+        this.pendingDeleteAttachments = [];
+
         // Store selected labels for editing
         this.editSelectedLabels = new Set(card.idLabels);
 
@@ -1150,7 +1733,7 @@ class TrelloShoppingApp {
                     ${images.map((img, index) => `
                         <div class="product-edit-image" data-attachment-id="${img.id}">
                             <img data-edit-image-index="${index}" alt="${card.name}">
-                            <button class="image-delete-btn" onclick="app.deleteAttachment('${cardId}', '${img.id}')">&times;</button>
+                            <button class="image-delete-btn" data-attachment-id="${img.id}">&times;</button>
                         </div>
                     `).join('')}
                 </div>
@@ -1180,11 +1763,17 @@ class TrelloShoppingApp {
                 </div>
                 <div class="modal-section">
                     <div class="modal-section-title">Ubicación</div>
-                    <div class="label-picker" id="edit-location-picker"></div>
-                </div>
-                <div class="modal-section">
-                    <div class="modal-section-title">Tiendas</div>
-                    <div class="label-picker" id="edit-store-picker"></div>
+                    <div id="edit-tag-builder">
+                        <select id="edit-tag-city" class="input" style="width: 100%; margin-bottom: 12px;"></select>
+                        <div class="location-picker-section">
+                            <div class="location-picker-title">🏪 Tiendas</div>
+                            <div id="edit-shops-picker" class="location-picker-list"></div>
+                        </div>
+                        <div class="location-picker-section">
+                            <div class="location-picker-title">🏠 Habitaciones</div>
+                            <div id="edit-rooms-picker" class="location-picker-list"></div>
+                        </div>
+                    </div>
                 </div>
                 <div class="modal-section">
                     <div class="modal-section-title">Notas</div>
@@ -1203,50 +1792,167 @@ class TrelloShoppingApp {
         // Setup image upload for edit mode
         this.setupEditImageUpload(cardId);
 
-        // Render label pickers for edit mode
-        this.renderEditLabelPickers(card);
-    }
-
-    renderEditLabelPickers(card) {
-        const locationPicker = document.getElementById('edit-location-picker');
-        const storePicker = document.getElementById('edit-store-picker');
-
-        const storeNames = this.getStoreNames();
-        const storeLabels = this.labels.filter(l => storeNames.includes(l.name));
-        const locationLabels = this.labels.filter(l => !storeNames.includes(l.name));
-
-        locationPicker.innerHTML = locationLabels.map(label => {
-            const isSelected = card.idLabels.includes(label.id);
-            return `
-                <label class="label-option label-${label.color} ${isSelected ? 'selected' : ''}">
-                    <input type="checkbox" class="edit-label-checkbox" value="${label.id}" ${isSelected ? 'checked' : ''}>
-                    <span>${label.name}</span>
-                </label>
-            `;
-        }).join('');
-
-        storePicker.innerHTML = storeLabels.map(label => {
-            const isSelected = card.idLabels.includes(label.id);
-            return `
-                <label class="label-option label-${label.color} ${isSelected ? 'selected' : ''}">
-                    <input type="checkbox" class="edit-label-checkbox" value="${label.id}" ${isSelected ? 'checked' : ''}>
-                    <span>${label.name}</span>
-                </label>
-            `;
-        }).join('');
-
-        // Add change listeners
-        document.querySelectorAll('.edit-label-checkbox').forEach(checkbox => {
-            checkbox.addEventListener('change', (e) => {
-                if (e.target.checked) {
-                    this.editSelectedLabels.add(e.target.value);
-                    e.target.closest('.label-option').classList.add('selected');
-                } else {
-                    this.editSelectedLabels.delete(e.target.value);
-                    e.target.closest('.label-option').classList.remove('selected');
-                }
+        // Add event listeners to existing image delete buttons
+        document.querySelectorAll('.image-delete-btn[data-attachment-id]').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                const attachmentId = btn.dataset.attachmentId;
+                this.markAttachmentForDeletion(attachmentId);
             });
         });
+
+        // Populate tag builder with existing tags pre-selected
+        this.populateEditTagBuilder(card);
+    }
+
+    populateEditTagBuilder(card) {
+        const citySelect = document.getElementById('edit-tag-city');
+        const shopsPicker = document.getElementById('edit-shops-picker');
+        const roomsPicker = document.getElementById('edit-rooms-picker');
+
+        if (!citySelect || !shopsPicker || !roomsPicker) return;
+
+        // Get existing V2 tags from card
+        const existingTags = card.idLabels
+            .map(labelId => this.labels.find(l => l.id === labelId))
+            .filter(label => label && TagSystem.isValidTag(label.name))
+            .map(label => TagSystem.decodeTag(label.name))
+            .filter(Boolean);
+
+        // Determine city from existing tags or use active city
+        const tagCity = existingTags.length > 0 ? existingTags[0].city : this.activeCity;
+
+        // Populate cities
+        citySelect.innerHTML = '<option value="">-- Selecciona ciudad --</option>' +
+            this.cities.map(c => `<option value="${c.code}" ${c.code === tagCity ? 'selected' : ''}>${c.name}</option>`).join('');
+
+        // Get selected shops, rooms, closets from existing tags
+        const selectedShops = new Set(existingTags.map(t => t.shop));
+        const selectedRooms = new Set(existingTags.filter(t => t.hasRoom).map(t => t.room));
+        const selectedClosets = new Set(existingTags.filter(t => t.hasCloset).map(t => `${t.room}_${t.closet}`));
+
+        // Render shops
+        const renderEditShops = () => {
+            const cityCode = citySelect.value;
+            const shops = cityCode ? this.getShopsByCity(cityCode) : [];
+
+            if (shops.length === 0) {
+                shopsPicker.innerHTML = '<div class="location-picker-empty">Selecciona una ciudad primero</div>';
+                return;
+            }
+
+            shopsPicker.innerHTML = shops.map(shop => {
+                const isSelected = selectedShops.has(shop.shopCode);
+                const floorOptions = shop.isMultiFloor && shop.totalFloors > 1
+                    ? Array.from({length: shop.totalFloors}, (_, i) => {
+                        const code = String(i).padStart(2, '0');
+                        const name = i === 0 ? 'Baja' : `P${i}`;
+                        return `<option value="${code}">${name}</option>`;
+                    }).join('')
+                    : '';
+
+                return `
+                    <label class="location-picker-item ${isSelected ? 'selected' : ''}" data-type="shop" data-shop="${shop.shopCode}">
+                        <input type="checkbox" class="edit-shop-checkbox" data-shop="${shop.shopCode}" ${isSelected ? 'checked' : ''}>
+                        <span class="item-name">${shop.name}</span>
+                        ${floorOptions ? `<select class="floor-select" data-shop="${shop.shopCode}">${floorOptions}</select>` : ''}
+                    </label>
+                `;
+            }).join('');
+        };
+
+        // Render rooms with closets
+        const renderEditRooms = () => {
+            const cityCode = citySelect.value;
+            const rooms = cityCode ? this.getRoomsByCity(cityCode) : [];
+
+            if (rooms.length === 0) {
+                roomsPicker.innerHTML = '<div class="location-picker-empty">No hay habitaciones configuradas</div>';
+                return;
+            }
+
+            let html = '';
+            rooms.forEach(room => {
+                const isRoomSelected = selectedRooms.has(room.roomCode);
+                html += `
+                    <label class="location-picker-item ${isRoomSelected ? 'selected' : ''}" data-type="room" data-room="${room.roomCode}">
+                        <input type="checkbox" class="edit-room-checkbox" data-room="${room.roomCode}" ${isRoomSelected ? 'checked' : ''}>
+                        <span class="item-name">${room.name}</span>
+                    </label>
+                `;
+
+                const closets = this.getClosetsByRoom(cityCode, room.roomCode);
+                closets.forEach(closet => {
+                    const isClosetSelected = selectedClosets.has(`${room.roomCode}_${closet.closetCode}`);
+                    html += `
+                        <label class="location-picker-item closet-item ${isClosetSelected ? 'selected' : ''}" data-type="closet" data-room="${room.roomCode}" data-closet="${closet.closetCode}">
+                            <input type="checkbox" class="edit-closet-checkbox" data-room="${room.roomCode}" data-closet="${closet.closetCode}" ${isClosetSelected ? 'checked' : ''}>
+                            <span class="item-name">${closet.name}</span>
+                        </label>
+                    `;
+                });
+            });
+
+            roomsPicker.innerHTML = html;
+        };
+
+        // Event delegation
+        const container = document.getElementById('edit-tag-builder');
+        if (container) {
+            container.addEventListener('change', (e) => {
+                if (e.target.id === 'edit-tag-city') {
+                    renderEditShops();
+                    renderEditRooms();
+                } else if (e.target.type === 'checkbox') {
+                    const item = e.target.closest('.location-picker-item');
+                    if (item) item.classList.toggle('selected', e.target.checked);
+                }
+            });
+        }
+
+        renderEditShops();
+        renderEditRooms();
+    }
+
+    // Get selected V2 tags from edit tag builder
+    getEditSelectedV2Tags() {
+        const citySelect = document.getElementById('edit-tag-city');
+        const cityCode = citySelect?.value;
+
+        if (!cityCode) return [];
+
+        const tags = [];
+
+        const shopCheckboxes = document.querySelectorAll('.edit-shop-checkbox:checked');
+        shopCheckboxes.forEach(cb => {
+            const shopCode = cb.dataset.shop;
+            const floorSelect = document.querySelector(`#edit-tag-builder .floor-select[data-shop="${shopCode}"]`);
+            const floorCode = floorSelect?.value || '00';
+
+            const roomCheckboxes = document.querySelectorAll('.edit-room-checkbox:checked');
+            const closetCheckboxes = document.querySelectorAll('.edit-closet-checkbox:checked');
+
+            if (roomCheckboxes.length === 0 && closetCheckboxes.length === 0) {
+                tags.push(TagSystem.encodeTag(cityCode, shopCode, floorCode, '99', '99'));
+            } else {
+                roomCheckboxes.forEach(rcb => {
+                    const roomCode = rcb.dataset.room;
+                    const roomClosets = document.querySelectorAll(`.edit-closet-checkbox:checked[data-room="${roomCode}"]`);
+                    if (roomClosets.length === 0) {
+                        tags.push(TagSystem.encodeTag(cityCode, shopCode, floorCode, roomCode, '99'));
+                    }
+                });
+
+                closetCheckboxes.forEach(ccb => {
+                    const roomCode = ccb.dataset.room;
+                    const closetCode = ccb.dataset.closet;
+                    tags.push(TagSystem.encodeTag(cityCode, shopCode, floorCode, roomCode, closetCode));
+                });
+            }
+        });
+
+        return tags;
     }
 
     // Load edit mode images using OAuth
@@ -1273,30 +1979,84 @@ class TrelloShoppingApp {
         const uploadArea = document.getElementById('edit-image-upload-area');
         const imageInput = document.getElementById('edit-product-image');
 
-        uploadArea.onclick = () => imageInput.click();
+        // Clear any pending image
+        this.pendingEditImage = null;
 
-        imageInput.onchange = async (e) => {
+        uploadArea.onclick = (e) => {
+            if (e.target.closest('.edit-image-preview-remove')) return;
+            imageInput.click();
+        };
+
+        imageInput.onchange = (e) => {
             const file = e.target.files[0];
             if (file) {
-                try {
-                    uploadArea.innerHTML = '<div class="image-upload-placeholder"><span class="image-upload-icon">⏳</span><span class="image-upload-text">Subiendo...</span></div>';
-                    await this.addAttachmentToCard(cardId, file);
-
-                    // Reload card with new attachments
-                    const updatedCard = await this.trelloFetch(`/cards/${cardId}?fields=name,idList,idLabels,pos,desc&attachments=true&attachment_fields=url,name,mimeType`);
-                    const cardIndex = this.cards.findIndex(c => c.id === cardId);
-                    if (cardIndex !== -1) {
-                        this.cards[cardIndex] = updatedCard;
-                    }
-
-                    this.showToast('Imagen añadida');
-                    this.openEditMode(cardId);
-                } catch (error) {
-                    this.showToast('Error subiendo imagen: ' + error.message);
-                    uploadArea.innerHTML = '<div class="image-upload-placeholder"><span class="image-upload-icon">➕</span><span class="image-upload-text">Añadir foto</span></div>';
-                }
+                this.showEditImagePreview(file);
             }
         };
+    }
+
+    showEditImagePreview(file) {
+        const uploadArea = document.getElementById('edit-image-upload-area');
+
+        // Store file for upload on save
+        this.pendingEditImage = file;
+
+        // Show preview
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+            uploadArea.innerHTML = `
+                <div class="edit-image-preview-container">
+                    <img src="${ev.target.result}" alt="Preview" style="max-width: 100%; max-height: 150px; border-radius: 8px;">
+                    <button type="button" class="edit-image-preview-remove">✕</button>
+                </div>
+            `;
+            uploadArea.classList.add('has-preview');
+
+            // Add event listener directly to button
+            const removeBtn = uploadArea.querySelector('.edit-image-preview-remove');
+            removeBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                this.removeEditImagePreview();
+            });
+        };
+        reader.readAsDataURL(file);
+    }
+
+    removeEditImagePreview() {
+        const uploadArea = document.getElementById('edit-image-upload-area');
+
+        this.pendingEditImage = null;
+        uploadArea.classList.remove('has-preview');
+        uploadArea.innerHTML = `
+            <input type="file" id="edit-product-image" accept="image/*" hidden>
+            <div class="image-upload-placeholder">
+                <span class="image-upload-icon">➕</span>
+                <span class="image-upload-text">Añadir foto</span>
+            </div>
+        `;
+
+        // Re-setup the input listener
+        const imageInput = document.getElementById('edit-product-image');
+        imageInput.onchange = (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                this.showEditImagePreview(file);
+            }
+        };
+    }
+
+    markAttachmentForDeletion(attachmentId) {
+        // Add to pending deletions
+        if (!this.pendingDeleteAttachments.includes(attachmentId)) {
+            this.pendingDeleteAttachments.push(attachmentId);
+        }
+
+        // Hide the image element visually
+        const imageElement = document.querySelector(`.product-edit-image[data-attachment-id="${attachmentId}"]`);
+        if (imageElement) {
+            imageElement.style.display = 'none';
+        }
     }
 
     async deleteAttachment(cardId, attachmentId) {
@@ -1306,7 +2066,7 @@ class TrelloShoppingApp {
             await this.trelloFetch(`/cards/${cardId}/attachments/${attachmentId}`, { method: 'DELETE' });
 
             // Reload card
-            const updatedCard = await this.trelloFetch(`/cards/${cardId}?fields=name,idList,idLabels,pos,desc&attachments=true&attachment_fields=url,name,mimeType`);
+            const updatedCard = await this.trelloFetch(`/cards/${cardId}?fields=name,idList,idLabels,pos,desc&attachments=true&attachment_fields=url,name,mimeType,previews`);
             const cardIndex = this.cards.findIndex(c => c.id === cardId);
             if (cardIndex !== -1) {
                 this.cards[cardIndex] = updatedCard;
@@ -1325,10 +2085,17 @@ class TrelloShoppingApp {
         const nameInput = document.getElementById('edit-product-name').value.trim();
         const descInput = document.getElementById('edit-product-desc').value.trim();
         const btn = document.getElementById('save-edit-btn');
-        const newLabels = Array.from(this.editSelectedLabels);
 
         if (!nameInput) {
             this.showToast('El nombre no puede estar vacío');
+            return;
+        }
+
+        // Get new V2 tags from edit builder
+        const newV2Tags = this.getEditSelectedV2Tags();
+
+        if (newV2Tags.length === 0) {
+            this.showToast('Selecciona al menos una tienda');
             return;
         }
 
@@ -1336,30 +2103,95 @@ class TrelloShoppingApp {
         btn.textContent = 'Guardando...';
 
         try {
-            // Update name, description and labels
+            const card = this.cards.find(c => c.id === cardId);
+            const boardId = this.board?.id || this.selectedBoardId;
+
+            // Get non-V2 labels to preserve (legacy labels)
+            const nonV2LabelIds = card.idLabels.filter(labelId => {
+                const label = this.labels.find(l => l.id === labelId);
+                return label && !TagSystem.isValidTag(label.name);
+            });
+
+            // Find or create labels for new V2 tags
+            const newV2LabelIds = [];
+            for (const tagCode of newV2Tags) {
+                let tagLabel = this.labels.find(l => l.name === tagCode);
+                if (!tagLabel) {
+                    try {
+                        tagLabel = await this.createLabel(boardId, tagCode, null);
+                        this.labels.push(tagLabel);
+                    } catch (error) {
+                        console.error('Error creating label:', error);
+                        continue;
+                    }
+                }
+                newV2LabelIds.push(tagLabel.id);
+            }
+
+            // Combine non-V2 labels with new V2 labels
+            const finalLabelIds = [...nonV2LabelIds, ...newV2LabelIds];
+
+            // Update card
             await this.trelloFetch(`/cards/${cardId}`, {
                 method: 'PUT',
                 body: JSON.stringify({
                     name: nameInput,
                     desc: descInput,
-                    idLabels: newLabels
+                    idLabels: finalLabelIds
                 })
             });
 
             // Update local card
-            const card = this.cards.find(c => c.id === cardId);
             if (card) {
                 card.name = nameInput;
                 card.desc = descInput;
-                card.idLabels = newLabels;
+                card.idLabels = finalLabelIds;
+            }
+
+            // Track if we need to reload attachments
+            let needsAttachmentReload = false;
+
+            // Delete pending attachments if any
+            if (this.pendingDeleteAttachments && this.pendingDeleteAttachments.length > 0) {
+                btn.textContent = 'Eliminando imágenes...';
+                for (const attachmentId of this.pendingDeleteAttachments) {
+                    try {
+                        await this.trelloFetch(`/cards/${cardId}/attachments/${attachmentId}`, { method: 'DELETE' });
+                        needsAttachmentReload = true;
+                    } catch (error) {
+                        console.error('Error deleting attachment:', error);
+                    }
+                }
+                this.pendingDeleteAttachments = [];
+            }
+
+            // Upload pending image if any
+            if (this.pendingEditImage) {
+                btn.textContent = 'Subiendo imagen...';
+                await this.addAttachmentToCard(cardId, this.pendingEditImage);
+                this.pendingEditImage = null;
+                needsAttachmentReload = true;
+            }
+
+            // Reload card with attachments if we made any image changes
+            if (needsAttachmentReload) {
+                const updatedCard = await this.trelloFetch(`/cards/${cardId}?fields=name,idList,idLabels,pos,desc&attachments=true&attachment_fields=url,name,mimeType,previews`);
+                const cardIndex = this.cards.findIndex(c => c.id === cardId);
+                if (cardIndex !== -1) {
+                    this.cards[cardIndex] = updatedCard;
+                }
             }
 
             this.showToast('Guardado');
             this.showProductDetail(cardId);
 
-            // Re-render current view to update
+            // Re-render current view
             if (this.currentView === 'detail') {
-                this.renderStoreDetail(this.currentStore);
+                if (this.selectedV2Shop) {
+                    this.renderV2StoreDetail(this.selectedV2Shop);
+                } else if (this.currentStore) {
+                    this.renderStoreDetail(this.currentStore);
+                }
             } else if (this.currentView === 'stores') {
                 this.renderStoreCards();
             }
@@ -1396,7 +2228,7 @@ class TrelloShoppingApp {
 
         // Use requestAnimationFrame for smoother rendering
         requestAnimationFrame(() => {
-            this.renderStoreDetail(this.currentStore);
+            this.rerenderCurrentDetailView();
         });
 
         try {
@@ -1405,9 +2237,17 @@ class TrelloShoppingApp {
             // Rollback on error
             card.idList = previousListId;
             requestAnimationFrame(() => {
-                this.renderStoreDetail(this.currentStore);
+                this.rerenderCurrentDetailView();
             });
             this.showToast('Error: ' + error.message);
+        }
+    }
+
+    rerenderCurrentDetailView() {
+        if (this.selectedV2Shop) {
+            this.renderV2StoreDetail(this.selectedV2Shop);
+        } else if (this.currentStore) {
+            this.renderStoreDetail(this.currentStore);
         }
     }
 
@@ -1415,9 +2255,20 @@ class TrelloShoppingApp {
         if (this.currentView === 'stores') {
             this.loadBoard();
         } else if (this.currentView === 'detail') {
+            const savedV2Shop = this.selectedV2Shop;
+            const savedStore = this.currentStore;
             this.loadBoard().then(() => {
-                if (this.currentStore) {
-                    const storeLabel = this.labels.find(l => l.id === this.currentStore.id);
+                if (savedV2Shop) {
+                    // Re-find the V2 shop after reload
+                    const shop = this.getShopsByCity(savedV2Shop.cityCode)
+                        .find(s => s.shopCode === savedV2Shop.shopCode);
+                    if (shop) {
+                        this.showV2StoreDetail(shop);
+                    } else {
+                        this.showStoreCards();
+                    }
+                } else if (savedStore) {
+                    const storeLabel = this.labels.find(l => l.id === savedStore.id);
                     if (storeLabel) {
                         this.showStoreDetail(storeLabel);
                     }
@@ -1433,19 +2284,21 @@ class TrelloShoppingApp {
     showShoppingMode() {
         this.currentView = 'shopping';
         this.selectedStore = null;
-        
+        this.selectedV2Shop = null;
+        this.selectedFloor = 'all';
+
         document.getElementById('store-cards-view').classList.add('hidden');
         document.getElementById('store-detail-view').classList.add('hidden');
         document.getElementById('shopping-mode-view').classList.remove('hidden');
-        
+
         this.renderShoppingMode();
     }
 
     renderShoppingMode() {
         const container = document.getElementById('shopping-mode-container');
 
-        // If no store selected, show store selector
-        if (!this.selectedStore) {
+        // If no store selected (neither legacy nor V2), show store selector
+        if (!this.selectedStore && !this.selectedV2Shop) {
             this.renderStoreSelector(container);
             return;
         }
@@ -1457,6 +2310,9 @@ class TrelloShoppingApp {
     renderStoreSelector(container) {
         const storeNames = this.getStoreNames();
         const storeLabels = this.labels.filter(l => storeNames.includes(l.name));
+
+        // Get V2 shops for current city
+        const v2Shops = this.getShopsByCity(this.activeCity);
 
         let html = `
             <div class="shopping-selector-view">
@@ -1472,6 +2328,23 @@ class TrelloShoppingApp {
                     <div class="shopping-store-grid">
         `;
 
+        // Show V2 shops first if they exist
+        if (v2Shops.length > 0) {
+            v2Shops.forEach(shop => {
+                const colorHex = this.getLabelColorHex(shop.color || 'orange');
+                html += `
+                    <button class="shopping-store-card shopping-store-v2" data-v2-shop="${shop.cityCode}_${shop.shopCode}">
+                        <div class="shopping-store-icon" style="background: ${colorHex}20; color: ${colorHex}">
+                            ${shop.icon || '🏪'}
+                        </div>
+                        <span class="shopping-store-name">${shop.name}</span>
+                        ${shop.isMultiFloor ? `<span class="shopping-store-floors">${shop.totalFloors} plantas</span>` : ''}
+                    </button>
+                `;
+            });
+        }
+
+        // Show legacy stores
         storeLabels.forEach(store => {
             const icon = this.getStoreIcon(store.name);
             html += `
@@ -1497,19 +2370,61 @@ class TrelloShoppingApp {
             this.showStoreCards();
         });
 
-        container.querySelectorAll('.shopping-store-card').forEach(btn => {
+        // V2 shop click handlers
+        container.querySelectorAll('.shopping-store-v2').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const shopKey = btn.dataset.v2Shop;
+                const [cityCode, shopCode] = shopKey.split('_');
+                this.selectedV2Shop = this.getShopInfo(cityCode, shopCode);
+                this.selectedStore = null;
+                this.selectedFloor = 'all';
+                this.renderShoppingMode();
+            });
+        });
+
+        // Legacy store click handlers
+        container.querySelectorAll('.shopping-store-card:not(.shopping-store-v2)').forEach(btn => {
             btn.addEventListener('click', () => {
                 const storeId = btn.dataset.storeId;
                 this.selectedStore = this.labels.find(l => l.id === storeId);
+                this.selectedV2Shop = null;
                 this.renderShoppingMode();
             });
         });
     }
 
     renderShoppingView(container) {
-        // Get all products for this store
-        const storeProducts = this.cards.filter(c => c.idLabels.includes(this.selectedStore.id));
-        const activeStoreProducts = storeProducts.filter(c => c.idList === this.activeList?.id);
+        let storeProducts, activeStoreProducts, storeIcon, storeName;
+        let isV2Shop = false;
+        let isMultiFloor = false;
+        let totalFloors = 1;
+
+        if (this.selectedV2Shop) {
+            // V2 shop - filter by tag prefix
+            isV2Shop = true;
+            isMultiFloor = this.selectedV2Shop.isMultiFloor;
+            totalFloors = this.selectedV2Shop.totalFloors;
+            storeIcon = this.selectedV2Shop.icon || '🏪';
+            storeName = this.selectedV2Shop.name;
+
+            // Find products with V2 tags matching this shop
+            const tagPrefix = `${this.selectedV2Shop.cityCode}_${this.selectedV2Shop.shopCode}_`;
+            storeProducts = this.cards.filter(card => {
+                // Check if any label name is a V2 tag for this shop
+                return card.idLabels.some(labelId => {
+                    const label = this.labels.find(l => l.id === labelId);
+                    return label && TagSystem.isValidTag(label.name) && label.name.startsWith(tagPrefix);
+                });
+            });
+
+            activeStoreProducts = storeProducts.filter(c => c.idList === this.activeList?.id);
+        } else {
+            // Legacy store
+            storeProducts = this.cards.filter(c => c.idLabels.includes(this.selectedStore.id));
+            activeStoreProducts = storeProducts.filter(c => c.idList === this.activeList?.id);
+            storeIcon = this.getStoreIcon(this.selectedStore.name);
+            storeName = this.selectedStore.name;
+        }
 
         // Get location labels (excluding store names), sorted alphabetically
         const storeNames = this.getStoreNames();
@@ -1517,15 +2432,13 @@ class TrelloShoppingApp {
             .filter(l => !storeNames.includes(l.name))
             .sort((a, b) => a.name.localeCompare(b.name, 'es'));
 
-        const storeIcon = this.getStoreIcon(this.selectedStore.name);
-
         let html = `
             <div class="shopping-view">
                 <div class="shopping-header">
                     <button class="back-button" id="back-to-shopping-stores">← Cambiar tienda</button>
                     <div class="shopping-title">
                         <span>${storeIcon}</span>
-                        <strong>${this.selectedStore.name}</strong>
+                        <strong>${storeName}</strong>
                     </div>
                 </div>
 
@@ -1548,16 +2461,52 @@ class TrelloShoppingApp {
         // Group all store products by location
         html += '<div class="shopping-locations"><h3>🏠 Revisar por ubicación</h3>';
 
-        locationLabels.forEach(location => {
+        // Sort location labels to group closets by room
+        const sortedLocations = [...locationLabels].sort((a, b) => {
+            const aDecoded = TagSystem.isValidTag(a.name) ? TagSystem.decodeTag(a.name) : null;
+            const bDecoded = TagSystem.isValidTag(b.name) ? TagSystem.decodeTag(b.name) : null;
+
+            // V2 tags: sort by room code first, then closet code
+            if (aDecoded && bDecoded) {
+                if (aDecoded.room !== bDecoded.room) {
+                    return aDecoded.room.localeCompare(bDecoded.room);
+                }
+                return aDecoded.closet.localeCompare(bDecoded.closet);
+            }
+            // V2 tags before legacy labels
+            if (aDecoded && !bDecoded) return -1;
+            if (!aDecoded && bDecoded) return 1;
+            // Legacy labels: alphabetical
+            return a.name.localeCompare(b.name, 'es');
+        });
+
+        sortedLocations.forEach(location => {
             const locationProducts = storeProducts.filter(c => c.idLabels.includes(location.id));
-            
+
             if (locationProducts.length > 0) {
                 const inList = locationProducts.filter(c => c.idList === this.activeList?.id).length;
-                
+
+                // Get display name: for V2 tags show "Room : Closet" format, for legacy show label name
+                let displayName = location.name;
+                if (TagSystem.isValidTag(location.name)) {
+                    const decoded = TagSystem.decodeTag(location.name);
+                    if (decoded) {
+                        if (decoded.hasCloset) {
+                            const roomName = this.getRoomName(decoded.city, decoded.room);
+                            const closetName = this.getClosetName(decoded.city, decoded.room, decoded.closet);
+                            displayName = `${roomName} : ${closetName}`;
+                        } else if (decoded.hasRoom) {
+                            displayName = this.getRoomName(decoded.city, decoded.room);
+                        } else {
+                            displayName = 'Sin ubicación específica';
+                        }
+                    }
+                }
+
                 html += `
                     <div class="location-section">
                         <div class="location-header" style="background: ${this.getLabelColorHex(location.color)}">
-                            ${location.name}
+                            ${displayName}
                             <span class="count">${inList}/${locationProducts.length}</span>
                         </div>
                         <div class="shopping-products">
@@ -1575,6 +2524,8 @@ class TrelloShoppingApp {
         // Bind events
         document.getElementById('back-to-shopping-stores')?.addEventListener('click', () => {
             this.selectedStore = null;
+            this.selectedV2Shop = null;
+            this.selectedFloor = 'all';
             window.scrollTo(0, 0);
             this.renderShoppingMode();
         });
@@ -1611,7 +2562,7 @@ class TrelloShoppingApp {
             if (this.currentView === 'stores') {
                 this.renderStoreCards();
             } else if (this.currentView === 'detail') {
-                this.renderStoreDetail(this.currentStore);
+                this.rerenderCurrentDetailView();
             } else if (this.currentView === 'shopping') {
                 this.renderShoppingView(document.getElementById('shopping-mode-container'));
             }
@@ -1626,7 +2577,7 @@ class TrelloShoppingApp {
                 if (this.currentView === 'stores') {
                     this.renderStoreCards();
                 } else if (this.currentView === 'detail') {
-                    this.renderStoreDetail(this.currentStore);
+                    this.rerenderCurrentDetailView();
                 } else if (this.currentView === 'shopping') {
                     this.renderShoppingView(document.getElementById('shopping-mode-container'));
                 }
@@ -1661,27 +2612,15 @@ class TrelloShoppingApp {
                 </div>
 
                 <div class="settings-options">
-                    <button class="settings-option" id="settings-config-stores">
+                    <button class="settings-option" id="settings-dictionaries">
                         <span class="settings-option-icon">
                             <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="white" viewBox="0 0 16 16">
-                                <path d="M2.97 1.35A1 1 0 0 1 3.73 1h8.54a1 1 0 0 1 .76.35l2.609 3.044A1.5 1.5 0 0 1 16 5.37v.255a2.375 2.375 0 0 1-4.25 1.458A2.371 2.371 0 0 1 9.875 8 2.37 2.37 0 0 1 8 7.083 2.37 2.37 0 0 1 6.125 8a2.37 2.37 0 0 1-1.875-.917A2.375 2.375 0 0 1 0 5.625V5.37a1.5 1.5 0 0 1 .361-.976l2.61-3.045zm1.78 4.275a1.375 1.375 0 0 0 2.75 0 .5.5 0 0 1 1 0 1.375 1.375 0 0 0 2.75 0 .5.5 0 0 1 1 0 1.375 1.375 0 1 0 2.75 0V5.37a.5.5 0 0 0-.12-.325L12.27 2H3.73L1.12 5.045A.5.5 0 0 0 1 5.37v.255a1.375 1.375 0 0 0 2.75 0 .5.5 0 0 1 1 0zM1.5 8.5A.5.5 0 0 1 2 9v6h1v-5a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v5h6V9a.5.5 0 0 1 1 0v6h.5a.5.5 0 0 1 0 1H.5a.5.5 0 0 1 0-1H1V9a.5.5 0 0 1 .5-.5zM4 15h3v-5H4v5zm5-5a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1v-3zm3 0h-2v3h2v-3z"/>
+                                <path d="M1 2.828c.885-.37 2.154-.769 3.388-.893 1.33-.134 2.458.063 3.112.752v9.746c-.935-.53-2.12-.603-3.213-.493-1.18.12-2.37.461-3.287.811V2.828zm7.5-.141c.654-.689 1.782-.886 3.112-.752 1.234.124 2.503.523 3.388.893v9.923c-.918-.35-2.107-.692-3.287-.81-1.094-.111-2.278-.039-3.213.492V2.687zM8 1.783C7.015.936 5.587.81 4.287.94c-1.514.153-3.042.672-3.994 1.105A.5.5 0 0 0 0 2.5v11a.5.5 0 0 0 .707.455c.882-.4 2.303-.881 3.68-1.02 1.409-.142 2.59.087 3.223.877a.5.5 0 0 0 .78 0c.633-.79 1.814-1.019 3.222-.877 1.378.139 2.8.62 3.681 1.02A.5.5 0 0 0 16 13.5v-11a.5.5 0 0 0-.293-.455c-.952-.433-2.48-.952-3.994-1.105C10.413.809 8.985.936 8 1.783z"/>
                             </svg>
                         </span>
                         <div class="settings-option-text">
-                            <strong>Gestionar tiendas</strong>
-                            <span>Añadir, editar o eliminar tiendas</span>
-                        </div>
-                    </button>
-
-                    <button class="settings-option" id="settings-config-locations">
-                        <span class="settings-option-icon">
-                            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="white" viewBox="0 0 16 16">
-                                <path d="M8 16s6-5.686 6-10A6 6 0 0 0 2 6c0 4.314 6 10 6 10zm0-7a3 3 0 1 1 0-6 3 3 0 0 1 0 6z"/>
-                            </svg>
-                        </span>
-                        <div class="settings-option-text">
-                            <strong>Gestionar ubicaciones</strong>
-                            <span>Añadir, editar o eliminar ubicaciones</span>
+                            <strong>Gestionar diccionarios</strong>
+                            <span>Ciudades, tiendas, habitaciones y armarios</span>
                         </div>
                     </button>
 
@@ -1732,19 +2671,413 @@ class TrelloShoppingApp {
             this.showImportExportModal();
         });
 
-        document.getElementById('settings-config-stores').addEventListener('click', () => {
+        document.getElementById('settings-dictionaries').addEventListener('click', () => {
             modal.remove();
-            this.showConfigStoresModal();
-        });
-
-        document.getElementById('settings-config-locations').addEventListener('click', () => {
-            modal.remove();
-            this.showConfigLocationsModal();
+            this.showDictionaryModal();
         });
 
         document.getElementById('settings-logout').addEventListener('click', () => {
             closeModal();
             this.logout();
+        });
+    }
+
+    // ==================== Dictionary Management ====================
+
+    showDictionaryModal() {
+        const existingModal = document.getElementById('dictionary-modal-dynamic');
+        if (existingModal) existingModal.remove();
+
+        // Check if dictionary lists exist
+        if (!this.dictCitiesList || !this.dictShopsList || !this.dictRoomsList || !this.dictClosetsList) {
+            this.showToast('Error: Las listas de diccionarios no están configuradas. Recarga la página.');
+            return;
+        }
+
+        const modal = document.createElement('div');
+        modal.id = 'dictionary-modal-dynamic';
+        modal.className = 'modal-overlay';
+
+        const renderContent = () => {
+            const currentCity = this.activeCity;
+            const cityName = currentCity ? this.getCityName(currentCity) : null;
+
+            // If no cities exist, show city creation first
+            if (this.cities.length === 0) {
+                modal.innerHTML = `
+                    <div class="modal" style="max-width: 450px;">
+                        <div class="modal-header">
+                            <h3 class="modal-title">Configurar Diccionarios</h3>
+                            <button class="modal-close" id="dict-modal-close">×</button>
+                        </div>
+                        <div class="modal-section" style="text-align: center; padding: 30px;">
+                            <div style="font-size: 48px; margin-bottom: 16px;">🏙️</div>
+                            <h4 style="margin-bottom: 8px;">Primero, añade una ciudad</h4>
+                            <p style="color: var(--text-muted); margin-bottom: 20px;">
+                                Las tiendas, habitaciones y armarios pertenecerán a la ciudad que selecciones.
+                            </p>
+                            <button class="btn btn-primary" id="add-first-city-btn" style="min-height: 48px; padding: 14px 24px; font-size: 16px; -webkit-tap-highlight-color: transparent; touch-action: manipulation;">+ Añadir primera ciudad</button>
+                        </div>
+                    </div>
+                `;
+                // Use modal.querySelector since modal isn't in DOM yet
+                modal.querySelector('#dict-modal-close')?.addEventListener('click', () => {
+                    modal.remove();
+                    document.body.style.overflow = '';
+                    if (this.currentView === 'stores') this.showStoreCards();
+                });
+                modal.addEventListener('click', (e) => {
+                    if (e.target === modal) {
+                        modal.remove();
+                        document.body.style.overflow = '';
+                    }
+                });
+                modal.querySelector('#add-first-city-btn')?.addEventListener('click', () => {
+                    this.showAddDictionaryItemModal('city', renderContent);
+                });
+                return;
+            }
+
+            // Normal view with active city
+            modal.innerHTML = `
+                <div class="modal" style="max-height: 90vh; overflow-y: auto;">
+                    <div class="modal-header">
+                        <h3 class="modal-title">Diccionarios</h3>
+                        <button class="modal-close" id="dict-modal-close">×</button>
+                    </div>
+
+                    <!-- Active City Selector -->
+                    <div class="modal-section" style="background: var(--bg-secondary); border-radius: 8px; margin: 0 16px 16px;">
+                        <div style="display: flex; align-items: center; gap: 12px;">
+                            <span style="font-size: 24px;">🏙️</span>
+                            <div style="flex: 1;">
+                                <div style="font-size: 12px; color: var(--text-muted);">Ciudad activa</div>
+                                <select id="active-city-select" class="input" style="margin-top: 4px; font-weight: 600;">
+                                    ${this.cities.map(c => `
+                                        <option value="${c.code}" ${c.code === currentCity ? 'selected' : ''}>${c.name}</option>
+                                    `).join('')}
+                                </select>
+                            </div>
+                            <button class="add-btn-compact" id="add-city-btn" title="Añadir ciudad">+</button>
+                        </div>
+                    </div>
+
+                    <!-- Shops Section -->
+                    <div class="modal-section">
+                        <div class="modal-section-title">🏪 Tiendas de ${cityName}</div>
+                        <div class="dict-list" id="dict-shops-list">
+                            ${this.getShopsByCity(currentCity).length === 0 ?
+                                '<p style="color: var(--text-muted); font-size: 14px;">No hay tiendas en esta ciudad</p>' :
+                                this.getShopsByCity(currentCity).map(s => `
+                                    <div class="dict-item" data-type="shop" data-card-id="${s.cardId}">
+                                        <span class="dict-item-icon">${s.icon || '🏪'}</span>
+                                        <span class="dict-item-name">${s.name}</span>
+                                        <span class="dict-item-info">${s.isMultiFloor ? `${s.totalFloors} plantas` : '1 planta'}</span>
+                                        <button class="dict-item-delete" data-card-id="${s.cardId}">×</button>
+                                    </div>
+                                `).join('')
+                            }
+                        </div>
+                        <button class="add-dict-btn" id="add-shop-btn"><span class="add-icon">+</span> Añadir tienda</button>
+                    </div>
+
+                    <!-- Rooms Section -->
+                    <div class="modal-section">
+                        <div class="modal-section-title">🚪 Habitaciones de ${cityName}</div>
+                        <div class="dict-list" id="dict-rooms-list">
+                            ${this.getRoomsByCity(currentCity).length === 0 ?
+                                '<p style="color: var(--text-muted); font-size: 14px;">No hay habitaciones en esta ciudad</p>' :
+                                this.getRoomsByCity(currentCity).map(r => `
+                                    <div class="dict-item" data-type="room" data-card-id="${r.cardId}">
+                                        <span class="dict-item-name">${r.name}</span>
+                                        <button class="dict-item-delete" data-card-id="${r.cardId}">×</button>
+                                    </div>
+                                `).join('')
+                            }
+                        </div>
+                        <button class="add-dict-btn" id="add-room-btn"><span class="add-icon">+</span> Añadir habitación</button>
+                    </div>
+
+                    <!-- Closets Section -->
+                    <div class="modal-section">
+                        <div class="modal-section-title">🗄️ Armarios de ${cityName}</div>
+                        <div class="dict-list" id="dict-closets-list">
+                            ${this.closets.filter(c => c.cityCode === currentCity).length === 0 ?
+                                '<p style="color: var(--text-muted); font-size: 14px;">No hay armarios en esta ciudad</p>' :
+                                this.closets.filter(c => c.cityCode === currentCity).map(c => {
+                                    const roomName = this.getRoomName(c.cityCode, c.roomCode);
+                                    return `
+                                        <div class="dict-item" data-type="closet" data-card-id="${c.cardId}">
+                                            <span class="dict-item-name">${c.name}</span>
+                                            <span class="dict-item-info">${roomName}</span>
+                                            <button class="dict-item-delete" data-card-id="${c.cardId}">×</button>
+                                        </div>
+                                    `;
+                                }).join('')
+                            }
+                        </div>
+                        <button class="add-dict-btn" id="add-closet-btn" ${this.getRoomsByCity(currentCity).length === 0 ? 'disabled title="Primero añade una habitación"' : ''}><span class="add-icon">+</span> Añadir armario</button>
+                    </div>
+                </div>
+            `;
+
+            // Bind all events
+            this.bindDictionaryModalEvents(modal, renderContent);
+        };
+
+        renderContent();
+        document.body.appendChild(modal);
+        document.body.style.overflow = 'hidden';
+    }
+
+    bindDictionaryModalClose(modal) {
+        const closeModal = () => {
+            modal.remove();
+            document.body.style.overflow = '';
+            // Refresh main view when closing
+            if (this.currentView === 'stores') {
+                this.showStoreCards();
+            }
+        };
+        modal.querySelector('#dict-modal-close')?.addEventListener('click', closeModal);
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) closeModal();
+        });
+    }
+
+    bindDictionaryModalEvents(modal, renderContent) {
+        this.bindDictionaryModalClose(modal);
+
+        // Active city selector
+        modal.querySelector('#active-city-select')?.addEventListener('change', (e) => {
+            this.activeCity = e.target.value;
+            localStorage.setItem('active_city', this.activeCity);
+            renderContent();
+        });
+
+        // Delete buttons
+        modal.querySelectorAll('.dict-item-delete').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                const cardId = btn.dataset.cardId;
+                if (confirm('¿Eliminar este elemento?')) {
+                    try {
+                        await this.trelloFetch(`/cards/${cardId}`, { method: 'DELETE' });
+                        this.cards = this.cards.filter(c => c.id !== cardId);
+                        this.loadDictionaries();
+                        renderContent();
+                        this.showToast('Eliminado');
+                    } catch (error) {
+                        this.showToast('Error: ' + error.message);
+                    }
+                }
+            });
+        });
+
+        // Add buttons
+        modal.querySelector('#add-city-btn')?.addEventListener('click', () => {
+            this.showAddDictionaryItemModal('city', renderContent);
+        });
+        modal.querySelector('#add-shop-btn')?.addEventListener('click', () => {
+            this.showAddDictionaryItemModal('shop', renderContent);
+        });
+        modal.querySelector('#add-room-btn')?.addEventListener('click', () => {
+            this.showAddDictionaryItemModal('room', renderContent);
+        });
+        modal.querySelector('#add-closet-btn')?.addEventListener('click', () => {
+            this.showAddDictionaryItemModal('closet', renderContent);
+        });
+    }
+
+    showAddDictionaryItemModal(type, parentRenderCallback) {
+        const overlay = document.createElement('div');
+        overlay.className = 'modal-overlay';
+        overlay.style.zIndex = '1001';
+
+        const titles = {
+            city: 'Nueva Ciudad',
+            shop: 'Nueva Tienda',
+            room: 'Nueva Habitación',
+            closet: 'Nuevo Armario'
+        };
+
+        const currentCity = this.activeCity;
+
+        // Get next available code
+        const getNextCode = (items, codeField = 'code') => {
+            if (!items || items.length === 0) return '00';
+            const codes = items.map(i => parseInt(i[codeField], 10)).filter(n => !isNaN(n));
+            if (codes.length === 0) return '00';
+            return String(Math.max(...codes) + 1).padStart(2, '0');
+        };
+
+        let formContent = '';
+
+        if (type === 'city') {
+            const nextCode = getNextCode(this.cities);
+            formContent = `
+                <div class="input-group">
+                    <label>Nombre de la ciudad</label>
+                    <input type="text" id="dict-name" class="input" placeholder="Ej: Sant Cugat" autofocus>
+                </div>
+                <input type="hidden" id="dict-code" value="${nextCode}">
+            `;
+        } else if (type === 'shop') {
+            const nextCode = getNextCode(this.getShopsByCity(currentCity), 'shopCode');
+            formContent = `
+                <div class="input-group">
+                    <label>Nombre de la tienda</label>
+                    <input type="text" id="dict-name" class="input" placeholder="Ej: Mercadona" autofocus>
+                </div>
+                <div class="input-group">
+                    <label>Icono (emoji)</label>
+                    <input type="text" id="dict-icon" class="input" placeholder="🛒" maxlength="4" style="width: 80px;">
+                </div>
+                <div class="input-group">
+                    <label>¿Tiene múltiples plantas?</label>
+                    <select id="dict-multifloor" class="input">
+                        <option value="0">No (1 planta)</option>
+                        <option value="1">Sí</option>
+                    </select>
+                </div>
+                <div class="input-group" id="floors-group" style="display: none;">
+                    <label>Número de plantas</label>
+                    <input type="number" id="dict-floors" class="input" value="2" min="2" max="99">
+                </div>
+                <input type="hidden" id="dict-code" value="${nextCode}">
+            `;
+        } else if (type === 'room') {
+            const nextCode = getNextCode(this.getRoomsByCity(currentCity), 'roomCode');
+            formContent = `
+                <div class="input-group">
+                    <label>Nombre de la habitación</label>
+                    <input type="text" id="dict-name" class="input" placeholder="Ej: Cocina" autofocus>
+                </div>
+                <input type="hidden" id="dict-code" value="${nextCode}">
+            `;
+        } else if (type === 'closet') {
+            const rooms = this.getRoomsByCity(currentCity);
+            const firstRoom = rooms.length > 0 ? rooms[0].roomCode : '00';
+            const nextCode = getNextCode(this.getClosetsByRoom(currentCity, firstRoom), 'closetCode');
+            formContent = `
+                <div class="input-group">
+                    <label>Habitación</label>
+                    <select id="dict-room" class="input">
+                        ${rooms.map(r => `<option value="${r.roomCode}">${r.name}</option>`).join('')}
+                    </select>
+                </div>
+                <div class="input-group">
+                    <label>Nombre del armario</label>
+                    <input type="text" id="dict-name" class="input" placeholder="Ej: Nevera" autofocus>
+                </div>
+                <input type="hidden" id="dict-code" value="${nextCode}">
+            `;
+        }
+
+        overlay.innerHTML = `
+            <div class="modal" style="max-width: 380px;">
+                <div class="modal-header">
+                    <h3 class="modal-title">${titles[type]}</h3>
+                    <button class="modal-close" id="dict-add-close">×</button>
+                </div>
+                <div class="modal-section">
+                    ${formContent}
+                </div>
+                <div style="padding: 0 20px 20px; display: flex; gap: 10px;">
+                    <button class="btn btn-secondary" id="dict-add-cancel" style="flex: 1;">Cancelar</button>
+                    <button class="btn btn-primary" id="dict-add-save" style="flex: 1;">Guardar</button>
+                </div>
+            </div>
+        `;
+
+        document.body.appendChild(overlay);
+
+        const closeOverlay = () => overlay.remove();
+
+        document.getElementById('dict-add-close')?.addEventListener('click', closeOverlay);
+        document.getElementById('dict-add-cancel')?.addEventListener('click', closeOverlay);
+        overlay.addEventListener('click', (e) => {
+            if (e.target === overlay) closeOverlay();
+        });
+
+        // Focus input
+        setTimeout(() => document.getElementById('dict-name')?.focus(), 100);
+
+        // Toggle floors input for shops
+        if (type === 'shop') {
+            const multifloorSelect = document.getElementById('dict-multifloor');
+            const floorsGroup = document.getElementById('floors-group');
+            multifloorSelect?.addEventListener('change', () => {
+                floorsGroup.style.display = multifloorSelect.value === '1' ? 'block' : 'none';
+            });
+        }
+
+        // Update closet code when room changes
+        if (type === 'closet') {
+            const roomSelect = document.getElementById('dict-room');
+            roomSelect?.addEventListener('change', () => {
+                const nextCode = getNextCode(this.getClosetsByRoom(currentCity, roomSelect.value), 'closetCode');
+                document.getElementById('dict-code').value = nextCode;
+            });
+        }
+
+        // Save button
+        document.getElementById('dict-add-save')?.addEventListener('click', async () => {
+            const name = document.getElementById('dict-name')?.value.trim();
+            if (!name) {
+                this.showToast('El nombre es obligatorio');
+                return;
+            }
+
+            const saveBtn = document.getElementById('dict-add-save');
+            saveBtn.disabled = true;
+            saveBtn.textContent = 'Guardando...';
+
+            try {
+                let cardName = '';
+                let listId = '';
+                let desc = '';
+
+                const code = document.getElementById('dict-code').value;
+
+                if (type === 'city') {
+                    cardName = TagSystem.formatCityCard(code, name);
+                    listId = this.dictCitiesList.id;
+                } else if (type === 'shop') {
+                    const isMultiFloor = document.getElementById('dict-multifloor')?.value === '1';
+                    const floors = isMultiFloor ? parseInt(document.getElementById('dict-floors')?.value || '2', 10) : 1;
+                    const icon = document.getElementById('dict-icon')?.value.trim() || '🏪';
+                    cardName = TagSystem.formatShopCard(currentCity, code, isMultiFloor, floors, name);
+                    listId = this.dictShopsList.id;
+                    desc = `icon:${icon}`;
+                } else if (type === 'room') {
+                    cardName = TagSystem.formatRoomCard(currentCity, code, name);
+                    listId = this.dictRoomsList.id;
+                } else if (type === 'closet') {
+                    const roomCode = document.getElementById('dict-room')?.value;
+                    cardName = TagSystem.formatClosetCard(currentCity, roomCode, code, name);
+                    listId = this.dictClosetsList.id;
+                }
+
+                const card = await this.createCard(listId, cardName, [], desc);
+                this.cards.push(card);
+                this.loadDictionaries();
+
+                // Set as active city if it's the first one
+                if (type === 'city' && this.cities.length === 1) {
+                    this.activeCity = this.cities[0].code;
+                    localStorage.setItem('active_city', this.activeCity);
+                }
+
+                closeOverlay();
+                parentRenderCallback();
+                this.showToast(`${titles[type].replace('Nuev', '')} añadid${type === 'city' || type === 'room' ? 'a' : 'o'}`);
+            } catch (error) {
+                console.error('Error creating dictionary item:', error);
+                this.showToast('Error: ' + error.message);
+                saveBtn.disabled = false;
+                saveBtn.textContent = 'Guardar';
+            }
         });
     }
 
@@ -1827,7 +3160,7 @@ class TrelloShoppingApp {
             if (this.currentView === 'stores') {
                 this.renderStoreCards();
             } else if (this.currentView === 'detail') {
-                this.renderStoreDetail(this.currentStore);
+                this.rerenderCurrentDetailView();
             } else if (this.currentView === 'shopping') {
                 this.renderShoppingMode();
             }
@@ -1921,7 +3254,7 @@ class TrelloShoppingApp {
             if (this.currentView === 'stores') {
                 this.renderStoreCards();
             } else if (this.currentView === 'detail') {
-                this.renderStoreDetail(this.currentStore);
+                this.rerenderCurrentDetailView();
             } else if (this.currentView === 'shopping') {
                 this.renderShoppingMode();
             }
@@ -1951,14 +3284,172 @@ class TrelloShoppingApp {
         preview.classList.remove('has-image');
         uploadArea.classList.remove('has-image');
 
-        // Render label pickers
-        this.renderLabelPickers();
+        // Populate tag builder (V2)
+        this.populateTagBuilder();
 
         // Setup image upload handlers
         this.setupImageUpload();
 
         // Focus input
         setTimeout(() => document.getElementById('product-name').focus(), 100);
+    }
+
+    populateTagBuilder() {
+        const citySelect = document.getElementById('tag-city');
+        const shopsPicker = document.getElementById('shops-picker');
+        const roomsPicker = document.getElementById('rooms-picker');
+
+        if (!citySelect || !shopsPicker || !roomsPicker) {
+            console.error('Tag builder elements not found');
+            return;
+        }
+
+        // Clear selected tags
+        this.selectedV2Tags = this.selectedV2Tags || [];
+
+        // Populate cities
+        citySelect.innerHTML = '<option value="">-- Selecciona ciudad --</option>' +
+            this.cities.map(c => `<option value="${c.code}" ${c.code === this.activeCity ? 'selected' : ''}>${c.name}</option>`).join('');
+
+        // Render shops with checkboxes
+        const renderShops = () => {
+            const cityCode = citySelect.value;
+            const shops = cityCode ? this.getShopsByCity(cityCode) : [];
+
+            if (shops.length === 0) {
+                shopsPicker.innerHTML = '<div class="location-picker-empty">Selecciona una ciudad primero</div>';
+                return;
+            }
+
+            shopsPicker.innerHTML = shops.map(shop => {
+                const floorOptions = shop.isMultiFloor && shop.totalFloors > 1
+                    ? Array.from({length: shop.totalFloors}, (_, i) => {
+                        const code = String(i).padStart(2, '0');
+                        const name = i === 0 ? 'Baja' : `P${i}`;
+                        return `<option value="${code}">${name}</option>`;
+                    }).join('')
+                    : '';
+
+                return `
+                    <label class="location-picker-item" data-type="shop" data-shop="${shop.shopCode}">
+                        <input type="checkbox" class="shop-checkbox" data-shop="${shop.shopCode}">
+                        <span class="item-name">${shop.name}</span>
+                        ${floorOptions ? `<select class="floor-select" data-shop="${shop.shopCode}">${floorOptions}</select>` : ''}
+                    </label>
+                `;
+            }).join('');
+        };
+
+        // Render rooms with closets nested
+        const renderRooms = () => {
+            const cityCode = citySelect.value;
+            const rooms = cityCode ? this.getRoomsByCity(cityCode) : [];
+
+            if (rooms.length === 0) {
+                roomsPicker.innerHTML = '<div class="location-picker-empty">No hay habitaciones configuradas</div>';
+                return;
+            }
+
+            let html = '';
+            rooms.forEach(room => {
+                // Room checkbox
+                html += `
+                    <label class="location-picker-item" data-type="room" data-room="${room.roomCode}">
+                        <input type="checkbox" class="room-checkbox" data-room="${room.roomCode}">
+                        <span class="item-name">${room.name}</span>
+                    </label>
+                `;
+
+                // Closets for this room (indented)
+                const closets = this.getClosetsByRoom(cityCode, room.roomCode);
+                closets.forEach(closet => {
+                    html += `
+                        <label class="location-picker-item closet-item" data-type="closet" data-room="${room.roomCode}" data-closet="${closet.closetCode}">
+                            <input type="checkbox" class="closet-checkbox" data-room="${room.roomCode}" data-closet="${closet.closetCode}">
+                            <span class="item-name">${closet.name}</span>
+                        </label>
+                    `;
+                });
+            });
+
+            roomsPicker.innerHTML = html;
+        };
+
+        // Handle checkbox changes for visual feedback
+        const handleCheckboxChange = (e) => {
+            const item = e.target.closest('.location-picker-item');
+            if (item) {
+                item.classList.toggle('selected', e.target.checked);
+            }
+        };
+
+        // Event delegation for the tag builder container
+        const container = document.getElementById('tag-builder');
+        if (container) {
+            container._tagBuilderHandler && container.removeEventListener('change', container._tagBuilderHandler);
+
+            container._tagBuilderHandler = (e) => {
+                if (e.target.id === 'tag-city') {
+                    renderShops();
+                    renderRooms();
+                } else if (e.target.type === 'checkbox') {
+                    handleCheckboxChange(e);
+                }
+            };
+
+            container.addEventListener('change', container._tagBuilderHandler);
+        }
+
+        // Initialize
+        renderShops();
+        renderRooms();
+    }
+
+    // Get selected V2 tags from the tag builder
+    getSelectedV2Tags() {
+        const citySelect = document.getElementById('tag-city');
+        const cityCode = citySelect?.value;
+
+        if (!cityCode) return [];
+
+        const tags = [];
+
+        // Get selected shops
+        const shopCheckboxes = document.querySelectorAll('.shop-checkbox:checked');
+        shopCheckboxes.forEach(cb => {
+            const shopCode = cb.dataset.shop;
+            const floorSelect = document.querySelector(`.floor-select[data-shop="${shopCode}"]`);
+            const floorCode = floorSelect?.value || '00';
+
+            // Get selected rooms/closets for this shop
+            const roomCheckboxes = document.querySelectorAll('.room-checkbox:checked');
+            const closetCheckboxes = document.querySelectorAll('.closet-checkbox:checked');
+
+            if (roomCheckboxes.length === 0 && closetCheckboxes.length === 0) {
+                // Shop only, no room/closet
+                tags.push(TagSystem.encodeTag(cityCode, shopCode, floorCode, '99', '99'));
+            } else {
+                // Add tag for each selected room (without closet)
+                roomCheckboxes.forEach(rcb => {
+                    const roomCode = rcb.dataset.room;
+                    // Check if any closet of this room is selected
+                    const roomClosets = document.querySelectorAll(`.closet-checkbox:checked[data-room="${roomCode}"]`);
+                    if (roomClosets.length === 0) {
+                        // Room without closet
+                        tags.push(TagSystem.encodeTag(cityCode, shopCode, floorCode, roomCode, '99'));
+                    }
+                });
+
+                // Add tag for each selected closet
+                closetCheckboxes.forEach(ccb => {
+                    const roomCode = ccb.dataset.room;
+                    const closetCode = ccb.dataset.closet;
+                    tags.push(TagSystem.encodeTag(cityCode, shopCode, floorCode, roomCode, closetCode));
+                });
+            }
+        });
+
+        return tags;
     }
 
 
@@ -1991,10 +3482,19 @@ class TrelloShoppingApp {
         reader.onload = (e) => {
             preview.innerHTML = `
                 <img src="${e.target.result}" alt="Preview">
-                <button type="button" class="image-preview-remove" onclick="event.stopPropagation(); app.removeImagePreview()">✕</button>
+                <button type="button" class="image-preview-remove">✕</button>
             `;
+            preview.classList.remove('hidden');
             preview.classList.add('has-image');
             uploadArea.classList.add('has-image');
+
+            // Add event listener directly to button
+            const removeBtn = preview.querySelector('.image-preview-remove');
+            removeBtn.addEventListener('click', (ev) => {
+                ev.stopPropagation();
+                ev.preventDefault();
+                this.removeImagePreview();
+            });
         };
         reader.readAsDataURL(file);
     }
@@ -2006,6 +3506,7 @@ class TrelloShoppingApp {
 
         imageInput.value = '';
         preview.innerHTML = '';
+        preview.classList.add('hidden');
         preview.classList.remove('has-image');
         uploadArea.classList.remove('has-image');
     }
@@ -2015,61 +3516,31 @@ class TrelloShoppingApp {
         document.body.style.overflow = '';
     }
 
-    renderLabelPickers() {
-        const locationPicker = document.getElementById('location-picker');
-        const storePicker = document.getElementById('store-picker');
-
-        const storeNames = this.getStoreNames();
-        const storeLabels = this.labels.filter(l => storeNames.includes(l.name));
-        const locationLabels = this.labels.filter(l => !storeNames.includes(l.name));
-
-        locationPicker.innerHTML = locationLabels.map(label => `
-            <label class="label-option label-${label.color}">
-                <input type="checkbox" class="label-checkbox" value="${label.id}">
-                <span>${label.name}</span>
-            </label>
-        `).join('');
-
-        storePicker.innerHTML = storeLabels.map(label => `
-            <label class="label-option label-${label.color}">
-                <input type="checkbox" class="label-checkbox" value="${label.id}">
-                <span>${label.name}</span>
-            </label>
-        `).join('');
-
-        // Simple change listeners on checkboxes
-        document.querySelectorAll('.label-checkbox').forEach(checkbox => {
-            checkbox.addEventListener('change', (e) => {
-                if (e.target.checked) {
-                    this.selectedLabels.add(e.target.value);
-                    e.target.closest('.label-option').classList.add('selected');
-                } else {
-                    this.selectedLabels.delete(e.target.value);
-                    e.target.closest('.label-option').classList.remove('selected');
-                }
-            });
-        });
-    }
-
     async createProduct() {
+        const btn = document.getElementById('create-product-btn');
+
+        // Prevent double submission
+        if (btn.disabled) {
+            console.log('⚠️ createProduct already in progress, ignoring');
+            return;
+        }
+
         const name = document.getElementById('product-name').value.trim();
         const descriptionInput = document.getElementById('product-description').value.trim();
         const imageInput = document.getElementById('product-image');
         const imageFile = imageInput.files[0];
-        const btn = document.getElementById('create-product-btn');
 
         if (!name) {
             this.showToast('Introduce un nombre para el producto');
             return;
         }
 
-        // Enforce at least one shopping list tag (store label)
-        const storeNames = this.getStoreNames();
-        const selectedStoreLabels = Array.from(this.selectedLabels).filter(labelId => {
-            const label = this.labels.find(l => l.id === labelId);
-            return label && storeNames.includes(label.name);
-        });
-        if (selectedStoreLabels.length === 0) {
+        // Get selected V2 tags (multiple locations)
+        const v2Tags = this.getSelectedV2Tags();
+        const hasV2Tags = v2Tags.length > 0;
+
+        // Enforce at least one location tag
+        if (!hasV2Tags) {
             this.showToast('Selecciona al menos una tienda');
             return;
         }
@@ -2077,8 +3548,36 @@ class TrelloShoppingApp {
         btn.disabled = true;
         btn.textContent = 'Creando...';
 
+        // Find or create labels for all V2 tags
+        const boardId = this.board?.id || this.selectedBoardId;
+        if (!boardId) {
+            this.showToast('Error: No hay tablero cargado');
+            btn.disabled = false;
+            btn.textContent = 'Crear Producto';
+            return;
+        }
+
+        for (const tagCode of v2Tags) {
+            let tagLabel = this.labels.find(l => l.name === tagCode);
+            if (!tagLabel) {
+                try {
+                    console.log('Creating V2 tag label:', { boardId, tagCode });
+                    tagLabel = await this.createLabel(boardId, tagCode, null);
+                    this.labels.push(tagLabel);
+                } catch (error) {
+                    console.error('Error creating V2 tag label:', error);
+                    this.showToast('Error: ' + (error.message || 'No se pudo crear etiqueta'));
+                    btn.disabled = false;
+                    btn.textContent = 'Crear Producto';
+                    return;
+                }
+            }
+            this.selectedLabels.add(tagLabel.id);
+        }
+
         try {
             // Create card in "Todos los Productos" list
+            // V2 tag code is stored as a label, not in the name (allows multiple locations per product)
             const card = await this.createCard(
                 this.allProductsList.id,
                 name,
@@ -2092,7 +3591,7 @@ class TrelloShoppingApp {
                 await this.addAttachmentToCard(card.id, imageFile);
 
                 // Reload card with attachments
-                const updatedCard = await this.trelloFetch(`/cards/${card.id}?fields=name,idList,idLabels,pos,desc&attachments=true&attachment_fields=url,name,mimeType`);
+                const updatedCard = await this.trelloFetch(`/cards/${card.id}?fields=name,idList,idLabels,pos,desc&attachments=true&attachment_fields=url,name,mimeType,previews`);
                 this.cards.push(updatedCard);
             } else {
                 this.cards.push(card);
@@ -2105,7 +3604,11 @@ class TrelloShoppingApp {
             if (this.currentView === 'stores') {
                 this.showStoreCards();
             } else if (this.currentView === 'detail') {
-                this.renderStoreDetail(this.currentStore);
+                if (this.selectedV2Shop) {
+                    this.renderV2StoreDetail(this.selectedV2Shop);
+                } else if (this.currentStore) {
+                    this.renderStoreDetail(this.currentStore);
+                }
             } else if (this.currentView === 'shopping') {
                 this.renderShoppingView(document.getElementById('shopping-mode-container'));
             }
@@ -2138,8 +3641,8 @@ class TrelloShoppingApp {
         }
         if (uploadArea) uploadArea.classList.remove('has-image');
 
-        // Re-render label pickers to clear selections
-        this.renderLabelPickers();
+        // Re-populate tag builder
+        this.populateTagBuilder();
     }
 
     // ==================== Import/Export ====================
@@ -2313,14 +3816,14 @@ class TrelloShoppingApp {
             let message = `✅ Importados: ${imported}`;
             if (skipped > 0) message += ` | Omitidos (duplicados): ${skipped}`;
             if (labelsCreated > 0) message += ` | Labels creados: ${labelsCreated}`;
-            
+
             this.showToast(message);
 
             // Refresh view
             if (this.currentView === 'stores') {
                 this.renderStoreCards();
             } else if (this.currentView === 'detail') {
-                this.renderStoreDetail(this.currentStore);
+                this.rerenderCurrentDetailView();
             }
 
         } catch (error) {
@@ -2502,228 +4005,6 @@ class TrelloShoppingApp {
         });
     }
 
-    showConfigStoresModal() {
-        const existingModal = document.getElementById('config-stores-modal');
-        if (existingModal) existingModal.remove();
-
-        const modal = document.createElement('div');
-        modal.id = 'config-stores-modal';
-        modal.className = 'modal-overlay';
-
-        const storesHtml = this.config.stores.map((store, idx) => `
-            <div class="config-item">
-                <span class="config-item-icon">${store.icon}</span>
-                <span class="config-item-name">${store.name}</span>
-                <button class="btn btn-danger btn-sm remove-store-btn" data-index="${idx}" title="Eliminar tienda">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" viewBox="0 0 16 16">
-                        <path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0V6z"/>
-                        <path fill-rule="evenodd" d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1v1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4H4.118zM2.5 3V2h11v1h-11z"/>
-                    </svg>
-                </button>
-            </div>
-        `).join('');
-
-        modal.innerHTML = `
-            <div class="modal">
-                <div class="modal-header">
-                    <button class="back-button" id="back-to-settings">← Atrás</button>
-                    <h3 class="modal-title">🏪 Gestionar Tiendas</h3>
-                    <button class="modal-close" id="config-stores-close">×</button>
-                </div>
-
-                <div class="modal-section">
-                    ${storesHtml ? `<div class="config-list">${storesHtml}</div>` : '<p style="color: var(--text-muted); text-align: center; padding: 20px;">No hay tiendas configuradas</p>'}
-                </div>
-
-                <div class="modal-section" style="margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border);">
-                    <div class="modal-section-title">Añadir nueva tienda</div>
-                    <div style="display: flex; flex-direction: column; gap: 12px;">
-                        <input type="text" id="new-store-name" placeholder="Nombre de la tienda" class="config-input">
-                        <input type="text" id="new-store-icon" placeholder="Icono (emoji)" maxlength="2" class="config-input">
-                        <button class="btn btn-primary" id="add-store-btn" style="width: 100%;">
-                            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" viewBox="0 0 16 16" style="margin-right: 6px;">
-                                <path d="M8 4a.5.5 0 0 1 .5.5v3h3a.5.5 0 0 1 0 1h-3v3a.5.5 0 0 1-1 0v-3h-3a.5.5 0 0 1 0-1h3v-3A.5.5 0 0 1 8 4z"/>
-                            </svg>
-                            Añadir tienda
-                        </button>
-                    </div>
-                </div>
-            </div>
-        `;
-
-        document.body.appendChild(modal);
-
-        document.getElementById('config-stores-close').addEventListener('click', () => modal.remove());
-        document.getElementById('back-to-settings').addEventListener('click', () => {
-            modal.remove();
-            this.showSettings();
-        });
-        modal.addEventListener('click', (e) => {
-            if (e.target === modal) modal.remove();
-        });
-
-        // Remove store buttons
-        modal.querySelectorAll('.remove-store-btn').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const index = parseInt(btn.dataset.index);
-                this.removeStore(index);
-            });
-        });
-
-        document.getElementById('back-to-settings').addEventListener('click', () => {
-            modal.remove();
-            this.showSettings();
-        });
-
-        document.getElementById('add-store-btn').addEventListener('click', () => {
-            const name = document.getElementById('new-store-name').value.trim();
-            const icon = document.getElementById('new-store-icon').value.trim() || '🏪';
-
-            if (!name) {
-                this.showToast('Introduce un nombre para la tienda');
-                return;
-            }
-
-            // Añadir a la configuración local
-            this.config.stores.push({ name, color: 'orange', icon });
-            this.saveConfig(this.config);
-
-            // Crear el label en Trello si no existe
-            (async () => {
-                let label = this.labels.find(l => l.name === name);
-                if (!label) {
-                    try {
-                        label = await this.createLabel(this.selectedBoardId, name, 'orange');
-                        this.labels.push(label);
-                    } catch (error) {
-                        this.showToast('No se pudo crear el tag en Trello: ' + error.message);
-                        // No abortamos, solo informamos
-                    }
-                }
-                this.showToast(`Tienda "${name}" añadida`);
-                modal.remove();
-                this.showConfigStoresModal();
-            })();
-        });
-    }
-
-    removeStore(index) {
-        const store = this.config.stores[index];
-        if (confirm(`¿Eliminar "${store.name}"?`)) {
-            this.config.stores.splice(index, 1);
-            this.saveConfig(this.config);
-            this.showToast(`Tienda "${store.name}" eliminada`);
-            this.showConfigStoresModal();
-        }
-    }
-
-    showConfigLocationsModal() {
-        const existingModal = document.getElementById('config-locations-modal');
-        if (existingModal) existingModal.remove();
-
-        const modal = document.createElement('div');
-        modal.id = 'config-locations-modal';
-        modal.className = 'modal-overlay';
-
-        const locationsHtml = this.config.locations.map((location, idx) => `
-            <div class="config-item">
-                <span class="config-item-dot" style="background: ${this.getLabelColorHex(location.color)}"></span>
-                <span class="config-item-name">${location.name}</span>
-                <button class="btn btn-danger btn-sm remove-location-btn" data-index="${idx}" title="Eliminar ubicación">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" viewBox="0 0 16 16">
-                        <path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0V6z"/>
-                        <path fill-rule="evenodd" d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1v1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4H4.118zM2.5 3V2h11v1h-11z"/>
-                    </svg>
-                </button>
-            </div>
-        `).join('');
-
-        modal.innerHTML = `
-            <div class="modal">
-                <div class="modal-header">
-                    <button class="back-button" id="back-to-settings-loc">← Atrás</button>
-                    <h3 class="modal-title">📍 Gestionar Ubicaciones</h3>
-                    <button class="modal-close" id="config-locations-close">×</button>
-                </div>
-
-                <div class="modal-section">
-                    ${locationsHtml ? `<div class="config-list">${locationsHtml}</div>` : '<p style="color: var(--text-muted); text-align: center; padding: 20px;">No hay ubicaciones configuradas</p>'}
-                </div>
-
-                <div class="modal-section" style="margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border);">
-                    <div class="modal-section-title">Añadir nueva ubicación</div>
-                    <div style="display: flex; flex-direction: column; gap: 12px;">
-                        <input type="text" id="new-location-name" placeholder="Nombre de la ubicación" class="config-input">
-                        <select id="new-location-color" class="config-input">
-                            <option value="green">🟢 Verde</option>
-                            <option value="blue">🔵 Azul</option>
-                            <option value="purple">🟣 Morado</option>
-                            <option value="sky">🔷 Celeste</option>
-                            <option value="lime">🟢 Lima</option>
-                            <option value="pink">🩷 Rosa</option>
-                        </select>
-                        <button class="btn btn-primary" id="add-location-btn" style="width: 100%;">
-                            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" viewBox="0 0 16 16" style="margin-right: 6px;">
-                                <path d="M8 4a.5.5 0 0 1 .5.5v3h3a.5.5 0 0 1 0 1h-3v3a.5.5 0 0 1-1 0v-3h-3a.5.5 0 0 1 0-1h3v-3A.5.5 0 0 1 8 4z"/>
-                            </svg>
-                            Añadir ubicación
-                        </button>
-                    </div>
-                </div>
-            </div>
-        `;
-
-        document.body.appendChild(modal);
-
-        document.getElementById('config-locations-close').addEventListener('click', () => modal.remove());
-        document.getElementById('back-to-settings-loc').addEventListener('click', () => {
-            modal.remove();
-            this.showSettings();
-        });
-        modal.addEventListener('click', (e) => {
-            if (e.target === modal) modal.remove();
-        });
-
-        // Remove location buttons
-        modal.querySelectorAll('.remove-location-btn').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const index = parseInt(btn.dataset.index);
-                this.removeLocation(index);
-            });
-        });
-
-        document.getElementById('back-to-settings-locations').addEventListener('click', () => {
-            modal.remove();
-            this.showSettings();
-        });
-
-        document.getElementById('add-location-btn').addEventListener('click', () => {
-            const name = document.getElementById('new-location-name').value.trim();
-            const color = document.getElementById('new-location-color').value;
-
-            if (!name) {
-                this.showToast('Introduce un nombre para la ubicación');
-                return;
-            }
-
-            this.config.locations.push({ name, color });
-            this.saveConfig(this.config);
-            this.showToast(`Ubicación "${name}" añadida`);
-            modal.remove();
-            this.showConfigLocationsModal();
-        });
-    }
-
-    removeLocation(index) {
-        const location = this.config.locations[index];
-        if (confirm(`¿Eliminar "${location.name}"?`)) {
-            this.config.locations.splice(index, 1);
-            this.saveConfig(this.config);
-            this.showToast(`Ubicación "${location.name}" eliminada`);
-            this.showConfigLocationsModal();
-        }
-    }
-
     // ==================== Utilities ====================
 
     getLabelColorHex(color) {
@@ -2787,3 +4068,7 @@ class TrelloShoppingApp {
 
 // Initialize app
 const app = new TrelloShoppingApp();
+window.app = app; // Expose globally for event handlers
+
+// Script is at end of body, DOM is ready - init immediately
+app.init().catch(err => console.error('Error initializing app:', err));
