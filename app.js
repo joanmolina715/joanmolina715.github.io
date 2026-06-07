@@ -56,6 +56,7 @@ class TrelloShoppingApp {
         this.apiKey = localStorage.getItem('trello_api_key') || '';
         this.apiToken = localStorage.getItem('trello_api_token') || '';
         this.selectedBoardId = localStorage.getItem('trello_board_id') || '';
+        this.currentUserName = localStorage.getItem('shopping_list_user_name') || '';
         this.isOnline = navigator.onLine;
         this.serverReachable = navigator.onLine;
         this.isSyncing = false;
@@ -104,6 +105,10 @@ class TrelloShoppingApp {
         return `trello_pending_card_moves_${boardId}`;
     }
 
+    getPendingHistoryKey(boardId = this.selectedBoardId) {
+        return `trello_pending_card_history_${boardId}`;
+    }
+
     loadPendingMoves() {
         if (!this.selectedBoardId) return [];
         try {
@@ -116,6 +121,22 @@ class TrelloShoppingApp {
     savePendingMoves(moves) {
         if (!this.selectedBoardId) return;
         localStorage.setItem(this.getPendingMovesKey(), JSON.stringify(moves));
+        this.updateConnectionStatus();
+        this.schedulePendingSync();
+    }
+
+    loadPendingHistory() {
+        if (!this.selectedBoardId) return [];
+        try {
+            return JSON.parse(localStorage.getItem(this.getPendingHistoryKey()) || '[]');
+        } catch (error) {
+            return [];
+        }
+    }
+
+    savePendingHistory(entries) {
+        if (!this.selectedBoardId) return;
+        localStorage.setItem(this.getPendingHistoryKey(), JSON.stringify(entries));
         this.updateConnectionStatus();
         this.schedulePendingSync();
     }
@@ -202,7 +223,7 @@ class TrelloShoppingApp {
     }
 
     updateConnectionStatus() {
-        const pendingCount = this.loadPendingMoves().length;
+        const pendingCount = this.loadPendingMoves().length + this.loadPendingHistory().length;
         const statusEls = document.querySelectorAll('[data-connection-status]');
         const offline = !navigator.onLine || !this.serverReachable;
 
@@ -349,6 +370,140 @@ class TrelloShoppingApp {
     getStoreIcon(storeName) {
         const store = this.config.stores.find(s => s.name === storeName);
         return store?.icon || '🏪';
+    }
+
+    getCurrentUserLabel() {
+        return this.currentUserName?.trim() || 'Usuario sin nombre';
+    }
+
+    saveCurrentUserName(name) {
+        this.currentUserName = name.trim();
+        localStorage.setItem('shopping_list_user_name', this.currentUserName);
+    }
+
+    promptCurrentUserName() {
+        return new Promise(resolve => {
+            const existingModal = document.getElementById('user-name-modal');
+            if (existingModal) existingModal.remove();
+
+            const modal = document.createElement('div');
+            modal.id = 'user-name-modal';
+            modal.className = 'modal-overlay';
+            modal.style.zIndex = '500';
+            modal.innerHTML = `
+                <div class="modal" style="max-width: 420px;">
+                    <div class="modal-header">
+                        <h3 class="modal-title">Usuario</h3>
+                        <button class="modal-close" id="user-name-close">×</button>
+                    </div>
+
+                    <div class="modal-section">
+                        <p style="color: var(--text-secondary); font-size: 15px; line-height: 1.6; margin-bottom: 16px;">
+                            Este nombre se usará para el historial de productos añadidos y quitados.
+                        </p>
+                        <input id="user-name-input" class="input" type="text" maxlength="40" placeholder="Tu nombre" value="${this.escapeHtml(this.currentUserName)}">
+                        <div style="display: flex; gap: 10px; margin-top: 18px;">
+                            <button class="btn btn-secondary" id="user-name-cancel" style="flex: 1;">Cancelar</button>
+                            <button class="btn btn-primary" id="user-name-save" style="flex: 1;">Guardar</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            const close = value => {
+                modal.remove();
+                document.body.style.overflow = '';
+                resolve(value);
+            };
+
+            document.body.appendChild(modal);
+            document.body.style.overflow = 'hidden';
+
+            const input = document.getElementById('user-name-input');
+            const save = () => {
+                const name = input.value.trim();
+                if (!name) {
+                    this.showToast('Introduce un nombre de usuario');
+                    input.focus();
+                    return;
+                }
+
+                this.saveCurrentUserName(name);
+                close(name);
+            };
+
+            document.getElementById('user-name-close').addEventListener('click', () => close(null));
+            document.getElementById('user-name-cancel').addEventListener('click', () => close(null));
+            document.getElementById('user-name-save').addEventListener('click', save);
+            input.addEventListener('keypress', e => {
+                if (e.key === 'Enter') save();
+            });
+            setTimeout(() => input.focus(), 50);
+        });
+    }
+
+    async ensureCurrentUserName() {
+        if (this.currentUserName.trim()) return true;
+        return !!(await this.promptCurrentUserName());
+    }
+
+    getHistoryActionLabel(entry) {
+        if (entry.action === 'added') return 'añadió a la lista';
+        if (entry.reason === 'purchased') return 'quitó porque lo añadió a la cesta';
+        if (entry.reason === 'not_needed') return 'quitó porque no hacía falta';
+        return 'quitó de la lista';
+    }
+
+    buildHistoryEntry(card, action, reason = null) {
+        return {
+            cardId: card.id,
+            productName: card.name,
+            user: this.getCurrentUserLabel(),
+            action,
+            reason,
+            createdAt: new Date().toISOString()
+        };
+    }
+
+    formatHistoryComment(entry) {
+        const actionLabel = this.getHistoryActionLabel(entry);
+        return `[ShoppingList] ${entry.user} ${actionLabel} "${entry.productName}"`;
+    }
+
+    parseHistoryComment(action) {
+        const text = action?.data?.text || '';
+        if (!text.startsWith('[ShoppingList] ')) return null;
+
+        return {
+            text: text.replace('[ShoppingList] ', ''),
+            date: action.date
+        };
+    }
+
+    formatHistoryDate(dateValue) {
+        if (!dateValue) return '';
+        try {
+            return new Intl.DateTimeFormat('es', {
+                day: '2-digit',
+                month: 'short',
+                hour: '2-digit',
+                minute: '2-digit'
+            }).format(new Date(dateValue));
+        } catch (error) {
+            return '';
+        }
+    }
+
+    async getCardHistory(cardId) {
+        try {
+            const actions = await this.getCardActions(cardId);
+            return actions
+                .map(action => this.parseHistoryComment(action))
+                .filter(Boolean);
+        } catch (error) {
+            console.warn('No se pudo cargar el historial del producto:', error);
+            return [];
+        }
     }
 
     // Normalize string for accent-insensitive search
@@ -661,6 +816,42 @@ class TrelloShoppingApp {
                 idList: listId
             })
         });
+    }
+
+    async addCardComment(cardId, text) {
+        return this.trelloFetch(`/cards/${cardId}/actions/comments`, {
+            method: 'POST',
+            body: JSON.stringify({ text })
+        });
+    }
+
+    async getCardActions(cardId) {
+        return this.trelloFetch(`/cards/${cardId}/actions?filter=commentCard&fields=data,date&memberCreator_fields=fullName,username&limit=30`);
+    }
+
+    async recordCardHistory(entry) {
+        await this.addCardComment(entry.cardId, this.formatHistoryComment(entry));
+    }
+
+    async recordOrQueueCardHistory(entry) {
+        try {
+            await this.recordCardHistory(entry);
+        } catch (error) {
+            if (this.isNetworkError(error)) {
+                this.enqueueCardHistory(entry);
+                return;
+            }
+
+            console.warn('No se pudo registrar el historial:', error);
+        }
+    }
+
+    enqueueCardHistory(entry) {
+        const entries = this.loadPendingHistory();
+        entries.push(entry);
+        localStorage.setItem(this.getPendingHistoryKey(), JSON.stringify(entries));
+        this.updateConnectionStatus();
+        this.schedulePendingSync();
     }
 
     async updateCardLabels(cardId, labelIds) {
@@ -1338,8 +1529,11 @@ class TrelloShoppingApp {
         content.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando...</p></div>';
 
         try {
-            // Fetch all attachments for this card
-            const attachments = await this.getCardAttachments(cardId);
+            // Fetch attachments and shopping history for this card
+            const [attachments, history] = await Promise.all([
+                this.getCardAttachments(cardId),
+                this.getCardHistory(cardId)
+            ]);
             const images = attachments.filter(a => a.mimeType?.startsWith('image/'));
             this.currentCardImages = images;
 
@@ -1392,6 +1586,19 @@ class TrelloShoppingApp {
                     <div class="product-detail-section">
                         <span class="product-detail-label">📝 Notas</span>
                         ${card.desc ? `<p class="product-detail-desc">${card.desc}</p>` : '<p class="product-detail-desc empty">Sin notas</p>'}
+                    </div>
+                    <div class="product-detail-section">
+                        <span class="product-detail-label">Historial</span>
+                        ${history.length > 0 ? `
+                            <div class="product-history">
+                                ${history.map(entry => `
+                                    <div class="product-history-item">
+                                        <span>${this.escapeHtml(entry.text)}</span>
+                                        <time>${this.formatHistoryDate(entry.date)}</time>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        ` : '<p class="product-detail-desc empty">Sin historial</p>'}
                     </div>
                 </div>
                 <div class="product-detail-actions">
@@ -1725,10 +1932,12 @@ class TrelloShoppingApp {
         const isRemoving = card.idList === this.activeList.id;
         const removeReason = isRemoving ? await this.promptRemoveReason(card) : null;
         if (isRemoving && !removeReason) return;
+        if (!(await this.ensureCurrentUserName())) return;
 
         const targetListId = card.idList === this.activeList.id
             ? this.allProductsList.id
             : this.activeList.id;
+        const historyEntry = this.buildHistoryEntry(card, isRemoving ? 'removed' : 'added', removeReason);
 
         // Optimistic update - update UI immediately
         const previousListId = card.idList;
@@ -1749,10 +1958,11 @@ class TrelloShoppingApp {
         try {
             await this.moveCard(cardId, targetListId);
             this.removePendingMove(cardId);
+            await this.recordOrQueueCardHistory(historyEntry);
             this.saveBoardCache();
         } catch (error) {
             if (this.isNetworkError(error)) {
-                this.enqueueCardMove(cardId, targetListId);
+                this.enqueueCardMove(cardId, targetListId, historyEntry);
                 this.showToast('Cambio guardado offline. Se sincronizara al volver la conexion.');
                 return;
             }
@@ -1957,8 +2167,10 @@ class TrelloShoppingApp {
         const isCurrentlyActive = card.idList === this.activeList?.id;
         const removeReason = isCurrentlyActive ? await this.promptRemoveReason(card) : null;
         if (isCurrentlyActive && !removeReason) return;
+        if (!(await this.ensureCurrentUserName())) return;
 
         const targetList = isCurrentlyActive ? this.allProductsList : this.activeList;
+        const historyEntry = this.buildHistoryEntry(card, isCurrentlyActive ? 'removed' : 'added', removeReason);
 
         // Optimistic update - update UI immediately
         const previousListId = card.idList;
@@ -1984,10 +2196,11 @@ class TrelloShoppingApp {
         try {
             await this.moveCard(cardId, targetList.id);
             this.removePendingMove(cardId);
+            await this.recordOrQueueCardHistory(historyEntry);
             this.saveBoardCache();
         } catch (error) {
             if (this.isNetworkError(error)) {
-                this.enqueueCardMove(cardId, targetList.id);
+                this.enqueueCardMove(cardId, targetList.id, historyEntry);
                 this.showToast('Cambio guardado offline. Se sincronizara al volver la conexion.');
                 return;
             }
@@ -2011,11 +2224,12 @@ class TrelloShoppingApp {
         this.showToast(`${card.name} ${action} la lista`);
     }
 
-    enqueueCardMove(cardId, targetListId) {
+    enqueueCardMove(cardId, targetListId, history = null) {
         const moves = this.loadPendingMoves().filter(move => move.cardId !== cardId);
         moves.push({
             cardId,
             targetListId,
+            history,
             createdAt: new Date().toISOString()
         });
         console.log('📦 Cambio offline encolado:', { cardId, targetListId, pending: moves.length });
@@ -2032,13 +2246,13 @@ class TrelloShoppingApp {
     }
 
     schedulePendingSync() {
-        if (this.pendingSyncTimer || this.loadPendingMoves().length === 0) return;
+        if (this.pendingSyncTimer || (this.loadPendingMoves().length === 0 && this.loadPendingHistory().length === 0)) return;
 
         this.pendingSyncTimer = window.setTimeout(async () => {
             this.pendingSyncTimer = null;
             await this.syncPendingMovesAndRefresh({ silent: true });
 
-            if (this.loadPendingMoves().length > 0) {
+            if (this.loadPendingMoves().length > 0 || this.loadPendingHistory().length > 0) {
                 this.schedulePendingSync();
             }
         }, 5000);
@@ -2047,7 +2261,7 @@ class TrelloShoppingApp {
     async syncPendingMovesAndRefresh({ silent = false } = {}) {
         if (!this.selectedBoardId) return false;
 
-        const hadMoves = this.loadPendingMoves().length > 0;
+        const hadMoves = this.loadPendingMoves().length > 0 || this.loadPendingHistory().length > 0;
         const synced = await this.syncPendingMoves({ silent });
 
         if (hadMoves && synced) {
@@ -2059,9 +2273,10 @@ class TrelloShoppingApp {
 
     async syncPendingMoves({ silent = false } = {}) {
         const moves = this.loadPendingMoves();
-        if (moves.length === 0 || this.isSyncing) {
+        const pendingHistory = this.loadPendingHistory();
+        if ((moves.length === 0 && pendingHistory.length === 0) || this.isSyncing) {
             this.updateConnectionStatus();
-            return moves.length === 0;
+            return moves.length === 0 && pendingHistory.length === 0;
         }
 
         console.log('🔄 Sincronizando cambios offline:', moves);
@@ -2087,21 +2302,60 @@ class TrelloShoppingApp {
                 }
 
                 console.warn('No se pudo sincronizar un cambio pendiente:', error);
+                continue;
+            }
+
+            if (move.history) {
+                try {
+                    await this.recordCardHistory(move.history);
+                } catch (error) {
+                    if (this.isNetworkError(error)) {
+                        this.enqueueCardHistory(move.history);
+                        this.serverReachable = false;
+                        const moveIndex = moves.indexOf(move);
+                        remaining.push(...moves.slice(moveIndex + 1));
+                        break;
+                    }
+
+                    console.warn('No se pudo registrar el historial pendiente:', error);
+                }
             }
         }
 
         this.savePendingMoves(remaining);
+
+        if (remaining.length === 0) {
+            const historyEntries = this.loadPendingHistory();
+            const historyRemaining = [];
+            for (const entry of historyEntries) {
+                try {
+                    await this.recordCardHistory(entry);
+                    this.serverReachable = true;
+                } catch (error) {
+                    historyRemaining.push(entry);
+                    if (this.isNetworkError(error)) {
+                        this.serverReachable = false;
+                        const entryIndex = historyEntries.indexOf(entry);
+                        historyRemaining.push(...historyEntries.slice(entryIndex + 1));
+                        break;
+                    }
+                }
+            }
+            this.savePendingHistory(historyRemaining);
+        }
+
         this.saveBoardCache();
         this.isSyncing = false;
         this.updateConnectionStatus();
 
-        if (!silent && moves.length > 0 && remaining.length === 0) {
+        const totalPending = this.loadPendingMoves().length + this.loadPendingHistory().length;
+        if (!silent && (moves.length > 0 || pendingHistory.length > 0) && totalPending === 0) {
             this.showToast('Cambios offline sincronizados');
-        } else if (!silent && remaining.length > 0) {
-            this.showToast(`No se pudieron sincronizar ${remaining.length} cambio${remaining.length === 1 ? '' : 's'}. Se intentara de nuevo.`);
+        } else if (!silent && totalPending > 0) {
+            this.showToast(`No se pudieron sincronizar ${totalPending} cambio${totalPending === 1 ? '' : 's'}. Se intentara de nuevo.`);
         }
 
-        return remaining.length === 0;
+        return totalPending === 0;
     }
 
     showSettings() {
@@ -2120,6 +2374,18 @@ class TrelloShoppingApp {
                 </div>
 
                 <div class="settings-options">
+                    <button class="settings-option" id="settings-user">
+                        <span class="settings-option-icon">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="white" viewBox="0 0 16 16">
+                                <path d="M3 14s-1 0-1-1 1-4 6-4 6 3 6 4-1 1-1 1H3zm5-6a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/>
+                            </svg>
+                        </span>
+                        <div class="settings-option-text">
+                            <strong>Usuario</strong>
+                            <span>${this.currentUserName ? this.escapeHtml(this.currentUserName) : 'Configurar nombre para el historial'}</span>
+                        </div>
+                    </button>
+
                     <button class="settings-option" id="settings-config-stores">
                         <span class="settings-option-icon">
                             <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="white" viewBox="0 0 16 16">
@@ -2189,6 +2455,12 @@ class TrelloShoppingApp {
         document.getElementById('settings-import-export').addEventListener('click', () => {
             modal.remove();
             this.showImportExportModal();
+        });
+
+        document.getElementById('settings-user').addEventListener('click', async () => {
+            modal.remove();
+            document.body.style.overflow = '';
+            await this.promptCurrentUserName();
         });
 
         document.getElementById('settings-config-stores').addEventListener('click', () => {
@@ -2482,8 +2754,10 @@ class TrelloShoppingApp {
             this.showToast(`"${card.name}" ya esta en la lista`);
             return;
         }
+        if (!(await this.ensureCurrentUserName())) return;
 
         const previousListId = card.idList;
+        const historyEntry = this.buildHistoryEntry(card, 'added');
         card.idList = this.activeList.id;
         this.saveBoardCache();
 
@@ -2494,11 +2768,12 @@ class TrelloShoppingApp {
         try {
             await this.moveCard(cardId, this.activeList.id);
             this.removePendingMove(cardId);
+            await this.recordOrQueueCardHistory(historyEntry);
             this.saveBoardCache();
             this.showToast(`"${card.name}" añadido a la lista`);
         } catch (error) {
             if (this.isNetworkError(error)) {
-                this.enqueueCardMove(cardId, this.activeList.id);
+                this.enqueueCardMove(cardId, this.activeList.id, historyEntry);
                 this.showToast(`"${card.name}" añadido offline. Se sincronizara al volver la conexion.`);
                 return;
             }
