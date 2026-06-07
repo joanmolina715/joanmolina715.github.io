@@ -411,7 +411,12 @@ class TrelloShoppingApp {
                 return score > 0 ? { card, score } : null;
             })
             .filter(Boolean)
-            .sort((a, b) => b.score - a.score || a.card.name.localeCompare(b.card.name, 'es'))
+            .sort((a, b) => {
+                const aInList = a.card.idList === this.activeList?.id;
+                const bInList = b.card.idList === this.activeList?.id;
+                if (aInList !== bInList) return aInList ? 1 : -1;
+                return b.score - a.score || a.card.name.localeCompare(b.card.name, 'es');
+            })
             .slice(0, 5);
     }
 
@@ -1667,9 +1672,59 @@ class TrelloShoppingApp {
         document.body.style.overflow = '';
     }
 
+    promptRemoveReason(card) {
+        return new Promise(resolve => {
+            const existingModal = document.getElementById('remove-reason-modal');
+            if (existingModal) existingModal.remove();
+
+            const modal = document.createElement('div');
+            modal.id = 'remove-reason-modal';
+            modal.className = 'modal-overlay';
+            modal.style.zIndex = '450';
+            modal.innerHTML = `
+                <div class="modal" style="max-width: 420px;">
+                    <div class="modal-header">
+                        <h3 class="modal-title">Quitar de la lista</h3>
+                        <button class="modal-close" id="remove-reason-close">×</button>
+                    </div>
+
+                    <div class="modal-section">
+                        <p style="color: var(--text-secondary); font-size: 15px; line-height: 1.6; margin-bottom: 20px;">
+                            ¿Por que quieres quitar <strong style="color: var(--text);">"${this.escapeHtml(card.name)}"</strong>?
+                        </p>
+
+                        <div style="display: flex; flex-direction: column; gap: 10px;">
+                            <button class="btn btn-primary" id="remove-reason-purchased">Lo he añadido a la cesta</button>
+                            <button class="btn btn-secondary" id="remove-reason-not-needed">No me hace falta</button>
+                            <button class="btn btn-ghost" id="remove-reason-cancel">Cancelar</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            const close = result => {
+                modal.remove();
+                resolve(result);
+            };
+
+            document.body.appendChild(modal);
+            document.getElementById('remove-reason-close').addEventListener('click', () => close(null));
+            document.getElementById('remove-reason-cancel').addEventListener('click', () => close(null));
+            document.getElementById('remove-reason-purchased').addEventListener('click', () => close('purchased'));
+            document.getElementById('remove-reason-not-needed').addEventListener('click', () => close('not_needed'));
+            modal.addEventListener('click', e => {
+                if (e.target === modal) close(null);
+            });
+        });
+    }
+
     async toggleProduct(cardId) {
         const card = this.cards.find(c => c.id === cardId);
         if (!card) return;
+
+        const isRemoving = card.idList === this.activeList.id;
+        const removeReason = isRemoving ? await this.promptRemoveReason(card) : null;
+        if (isRemoving && !removeReason) return;
 
         const targetListId = card.idList === this.activeList.id
             ? this.allProductsList.id
@@ -1681,7 +1736,7 @@ class TrelloShoppingApp {
         card.idList = targetListId;
 
         // If removing from active list, add to recent products so it appears first
-        if (wasActive) {
+        if (wasActive && removeReason === 'purchased') {
             this.addToRecentProducts(cardId);
         }
 
@@ -1901,6 +1956,9 @@ class TrelloShoppingApp {
         if (!card) return;
 
         const isCurrentlyActive = card.idList === this.activeList?.id;
+        const removeReason = isCurrentlyActive ? await this.promptRemoveReason(card) : null;
+        if (isCurrentlyActive && !removeReason) return;
+
         const targetList = isCurrentlyActive ? this.allProductsList : this.activeList;
 
         // Optimistic update - update UI immediately
@@ -1948,7 +2006,7 @@ class TrelloShoppingApp {
         const action = isCurrentlyActive ? 'quitado de' : 'añadido a';
         
         // Track when marking as purchased (moving to allProductsList)
-        if (isCurrentlyActive) {
+        if (isCurrentlyActive && removeReason === 'purchased') {
             this.addToRecentProducts(cardId);
         }
         
@@ -2392,10 +2450,19 @@ class TrelloShoppingApp {
         container.innerHTML = `
             <div class="duplicate-suggestions-title">Productos similares</div>
             ${suggestions.map(({ card }) => {
-                const status = card.idList === this.activeList?.id ? 'En lista' : 'Disponible';
+                const isInList = card.idList === this.activeList?.id;
+                const status = isInList ? 'Ya en lista' : 'Añadir a lista';
                 return `
-                    <button type="button" class="duplicate-suggestion" data-card-id="${this.escapeHtml(card.id)}">
-                        <span class="duplicate-suggestion-name">${this.escapeHtml(card.name)}</span>
+                    <button
+                        type="button"
+                        class="duplicate-suggestion ${isInList ? 'in-list' : ''}"
+                        data-card-id="${this.escapeHtml(card.id)}"
+                        ${isInList ? 'disabled aria-disabled="true"' : ''}
+                    >
+                        <span class="duplicate-suggestion-main">
+                            <span class="duplicate-suggestion-check" aria-hidden="true">${isInList ? '✓' : ''}</span>
+                            <span class="duplicate-suggestion-name">${this.escapeHtml(card.name)}</span>
+                        </span>
                         <span class="duplicate-suggestion-meta">${status}</span>
                     </button>
                 `;
@@ -2403,16 +2470,46 @@ class TrelloShoppingApp {
         `;
 
         container.querySelectorAll('.duplicate-suggestion').forEach(button => {
-            button.addEventListener('click', () => {
-                const card = this.cards.find(c => c.id === button.dataset.cardId);
-                const nameInput = document.getElementById('product-name');
-                if (!card || !nameInput) return;
-
-                nameInput.value = card.name;
-                this.renderDuplicateSuggestions(card.name);
-                nameInput.focus();
+            button.addEventListener('click', async () => {
+                await this.addExistingProductToActiveList(button.dataset.cardId);
             });
         });
+    }
+
+    async addExistingProductToActiveList(cardId) {
+        const card = this.cards.find(c => c.id === cardId);
+        if (!card || !this.activeList) return;
+
+        if (card.idList === this.activeList.id) {
+            this.showToast(`"${card.name}" ya esta en la lista`);
+            return;
+        }
+
+        const previousListId = card.idList;
+        card.idList = this.activeList.id;
+        this.saveBoardCache();
+
+        this.closeAddModal();
+        this.resetAddModal();
+        requestAnimationFrame(() => this.renderCurrentView());
+
+        try {
+            await this.moveCard(cardId, this.activeList.id);
+            this.removePendingMove(cardId);
+            this.saveBoardCache();
+            this.showToast(`"${card.name}" añadido a la lista`);
+        } catch (error) {
+            if (this.isNetworkError(error)) {
+                this.enqueueCardMove(cardId, this.activeList.id);
+                this.showToast(`"${card.name}" añadido offline. Se sincronizara al volver la conexion.`);
+                return;
+            }
+
+            card.idList = previousListId;
+            this.saveBoardCache();
+            requestAnimationFrame(() => this.renderCurrentView());
+            this.showToast('Error: ' + error.message);
+        }
     }
 
 
