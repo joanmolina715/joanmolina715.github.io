@@ -2002,7 +2002,7 @@ class TrelloShoppingApp {
         const wasActive = previousListId === this.activeList.id;
         card.idList = targetListId;
 
-        if (wasActive && removeReason === 'purchased') {
+        if (wasActive) {
             this.addToRecentProducts(cardId);
         }
         this.applyCardMoveToDom(cardId, targetListId, previousListId);
@@ -2211,7 +2211,7 @@ class TrelloShoppingApp {
         const previousListId = card.idList;
         card.idList = targetList.id;
 
-        if (isCurrentlyActive && removeReason === 'purchased') {
+        if (isCurrentlyActive) {
             this.addToRecentProducts(cardId);
         }
         this.applyCardMoveToDom(cardId, targetList.id, previousListId);
