@@ -176,6 +176,40 @@ class TrelloShoppingApp {
         }
     }
 
+    scheduleRenderAfterCardMove() {
+        window.setTimeout(() => this.renderAfterCardMove(), 120);
+    }
+
+    applyCardMoveToDom(cardId, targetListId, previousListId) {
+        const isActive = targetListId === this.activeList?.id;
+        const wasActive = previousListId === this.activeList?.id;
+
+        if (this.currentView === 'shopping') {
+            document.querySelectorAll(`.shopping-product[data-card-id="${cardId}"]`).forEach(productEl => {
+                const checkbox = productEl.querySelector('.product-checkbox');
+                if (wasActive && !isActive && productEl.closest('.shopping-active-list')) {
+                    productEl.remove();
+                    return;
+                }
+
+                productEl.classList.toggle('in-list', isActive);
+                checkbox?.classList.toggle('checked', isActive);
+            });
+            return;
+        }
+
+        if (this.currentView === 'detail') {
+            document.querySelectorAll(`.detail-product[data-card-id="${cardId}"]`).forEach(productEl => {
+                if (wasActive && !isActive) {
+                    productEl.remove();
+                    return;
+                }
+
+                productEl.classList.toggle('checked', isActive);
+            });
+        }
+    }
+
     loadBoardCache() {
         if (!this.selectedBoardId) return null;
 
@@ -1971,7 +2005,8 @@ class TrelloShoppingApp {
         if (wasActive && removeReason === 'purchased') {
             this.addToRecentProducts(cardId);
         }
-        this.renderAfterCardMove();
+        this.applyCardMoveToDom(cardId, targetListId, previousListId);
+        this.scheduleRenderAfterCardMove();
         this.saveBoardCacheSoon();
         this.persistCardMove(card, previousListId, targetListId, historyEntry);
     }
@@ -2179,7 +2214,8 @@ class TrelloShoppingApp {
         if (isCurrentlyActive && removeReason === 'purchased') {
             this.addToRecentProducts(cardId);
         }
-        this.renderAfterCardMove();
+        this.applyCardMoveToDom(cardId, targetList.id, previousListId);
+        this.scheduleRenderAfterCardMove();
         this.saveBoardCacheSoon();
         this.persistCardMove(card, previousListId, targetList.id, historyEntry);
 
