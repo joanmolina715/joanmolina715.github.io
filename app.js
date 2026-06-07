@@ -3090,7 +3090,13 @@ class TrelloShoppingApp {
         toast.textContent = message;
         document.body.appendChild(toast);
 
-        setTimeout(() => toast.remove(), 3000);
+        let timeoutId;
+        const removeToast = () => {
+            clearTimeout(timeoutId);
+            toast.remove();
+        };
+        timeoutId = setTimeout(removeToast, 3000);
+        toast.addEventListener('click', removeToast);
     }
 
     loadTheme() {
