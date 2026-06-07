@@ -1740,12 +1740,11 @@ class TrelloShoppingApp {
             this.addToRecentProducts(cardId);
         }
 
-        this.saveBoardCache();
-
         // Use requestAnimationFrame for smoother rendering
         requestAnimationFrame(() => {
             this.renderStoreDetail(this.currentStore);
         });
+        setTimeout(() => this.saveBoardCache(), 0);
 
         try {
             await this.moveCard(cardId, targetListId);
@@ -1964,7 +1963,11 @@ class TrelloShoppingApp {
         // Optimistic update - update UI immediately
         const previousListId = card.idList;
         card.idList = targetList.id;
-        this.saveBoardCache();
+
+        // Track before render so purchased products are ordered as recent immediately.
+        if (isCurrentlyActive && removeReason === 'purchased') {
+            this.addToRecentProducts(cardId);
+        }
 
         // Re-render immediately with requestAnimationFrame
         requestAnimationFrame(() => {
@@ -1976,6 +1979,7 @@ class TrelloShoppingApp {
                 this.renderShoppingView(document.getElementById('shopping-mode-container'));
             }
         });
+        setTimeout(() => this.saveBoardCache(), 0);
 
         try {
             await this.moveCard(cardId, targetList.id);
@@ -2004,12 +2008,6 @@ class TrelloShoppingApp {
         }
 
         const action = isCurrentlyActive ? 'quitado de' : 'añadido a';
-        
-        // Track when marking as purchased (moving to allProductsList)
-        if (isCurrentlyActive && removeReason === 'purchased') {
-            this.addToRecentProducts(cardId);
-        }
-        
         this.showToast(`${card.name} ${action} la lista`);
     }
 
