@@ -356,6 +356,65 @@ class TrelloShoppingApp {
         return str.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
     }
 
+    escapeHtml(value) {
+        return String(value ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
+    normalizeProductName(str) {
+        return this.normalizeString(str)
+            .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    getSimilarProducts(query) {
+        const normalizedQuery = this.normalizeProductName(query);
+        if (normalizedQuery.length < 2) return [];
+
+        const queryWords = normalizedQuery
+            .split(' ')
+            .filter(word => word.length >= 2);
+        const seen = new Set();
+        const productLists = new Set([
+            this.allProductsList?.id,
+            this.activeList?.id
+        ].filter(Boolean));
+
+        return this.cards
+            .filter(card => productLists.has(card.idList))
+            .map(card => {
+                const normalizedName = this.normalizeProductName(card.name);
+                if (!normalizedName || seen.has(normalizedName)) return null;
+                seen.add(normalizedName);
+
+                const nameWords = normalizedName.split(' ').filter(word => word.length >= 2);
+                const sharedWords = queryWords.filter(word =>
+                    nameWords.some(nameWord => nameWord === word || nameWord.startsWith(word) || word.startsWith(nameWord))
+                );
+
+                let score = 0;
+                if (normalizedName === normalizedQuery) {
+                    score = 100;
+                } else if (normalizedName.startsWith(normalizedQuery)) {
+                    score = 85;
+                } else if (normalizedName.includes(normalizedQuery)) {
+                    score = 70;
+                } else if (sharedWords.length > 0) {
+                    score = 45 + sharedWords.length * 10;
+                }
+
+                return score > 0 ? { card, score } : null;
+            })
+            .filter(Boolean)
+            .sort((a, b) => b.score - a.score || a.card.name.localeCompare(b.card.name, 'es'))
+            .slice(0, 5);
+    }
+
     async init() {
         console.log('🔧 init() llamado');
 
@@ -2284,6 +2343,7 @@ class TrelloShoppingApp {
         this.selectedLabels.clear();
         document.getElementById('product-name').value = '';
         document.getElementById('product-description').value = '';
+        this.renderDuplicateSuggestions('');
         document.getElementById('add-modal').classList.remove('hidden');
         document.body.style.overflow = 'hidden';
 
@@ -2302,9 +2362,57 @@ class TrelloShoppingApp {
 
         // Setup image upload handlers
         this.setupImageUpload();
+        this.setupDuplicateSuggestions();
 
         // Focus input
         setTimeout(() => document.getElementById('product-name').focus(), 100);
+    }
+
+    setupDuplicateSuggestions() {
+        const nameInput = document.getElementById('product-name');
+        if (!nameInput) return;
+
+        nameInput.oninput = () => {
+            this.renderDuplicateSuggestions(nameInput.value);
+        };
+    }
+
+    renderDuplicateSuggestions(query) {
+        const container = document.getElementById('duplicate-suggestions');
+        if (!container) return;
+
+        const suggestions = this.getSimilarProducts(query);
+        if (suggestions.length === 0) {
+            container.classList.add('hidden');
+            container.innerHTML = '';
+            return;
+        }
+
+        container.classList.remove('hidden');
+        container.innerHTML = `
+            <div class="duplicate-suggestions-title">Productos similares</div>
+            ${suggestions.map(({ card }) => {
+                const status = card.idList === this.activeList?.id ? 'En lista' : 'Disponible';
+                return `
+                    <button type="button" class="duplicate-suggestion" data-card-id="${this.escapeHtml(card.id)}">
+                        <span class="duplicate-suggestion-name">${this.escapeHtml(card.name)}</span>
+                        <span class="duplicate-suggestion-meta">${status}</span>
+                    </button>
+                `;
+            }).join('')}
+        `;
+
+        container.querySelectorAll('.duplicate-suggestion').forEach(button => {
+            button.addEventListener('click', () => {
+                const card = this.cards.find(c => c.id === button.dataset.cardId);
+                const nameInput = document.getElementById('product-name');
+                if (!card || !nameInput) return;
+
+                nameInput.value = card.name;
+                this.renderDuplicateSuggestions(card.name);
+                nameInput.focus();
+            });
+        });
     }
 
 
@@ -2473,6 +2581,7 @@ class TrelloShoppingApp {
         this.selectedLabels.clear();
         document.getElementById('product-name').value = '';
         document.getElementById('product-description').value = '';
+        this.renderDuplicateSuggestions('');
 
         // Reset image
         const uploadArea = document.getElementById('image-upload-area');
