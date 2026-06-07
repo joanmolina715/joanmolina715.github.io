@@ -156,6 +156,26 @@ class TrelloShoppingApp {
         localStorage.setItem(this.getBoardCacheKey(), JSON.stringify(cache));
     }
 
+    saveBoardCacheSoon() {
+        const save = () => this.saveBoardCache();
+        if ('requestIdleCallback' in window) {
+            window.requestIdleCallback(save, { timeout: 1000 });
+            return;
+        }
+
+        window.setTimeout(save, 100);
+    }
+
+    renderAfterCardMove() {
+        if (this.currentView === 'stores') {
+            this.renderStoreCards();
+        } else if (this.currentView === 'detail') {
+            this.renderStoreDetail(this.currentStore);
+        } else if (this.currentView === 'shopping') {
+            this.renderShoppingView(document.getElementById('shopping-mode-container'));
+        }
+    }
+
     loadBoardCache() {
         if (!this.selectedBoardId) return null;
 
@@ -323,6 +343,10 @@ class TrelloShoppingApp {
         localStorage.setItem('recent_products', JSON.stringify(this.recentProducts));
     }
 
+    saveRecentProductsSoon() {
+        window.setTimeout(() => this.saveRecentProducts(), 100);
+    }
+
     // Add product to recent list (when marked as purchased)
     addToRecentProducts(cardId) {
         const timestamp = Date.now();
@@ -332,7 +356,7 @@ class TrelloShoppingApp {
         this.recentProducts.unshift({ cardId, timestamp });
         // Keep only last 10
         this.recentProducts = this.recentProducts.slice(0, 10);
-        this.saveRecentProducts();
+        this.saveRecentProductsSoon();
     }
 
     // Load active config (File B) from localStorage, or initialize from seed (File A) if first time
@@ -1944,36 +1968,12 @@ class TrelloShoppingApp {
         const wasActive = previousListId === this.activeList.id;
         card.idList = targetListId;
 
-        // If removing from active list, add to recent products so it appears first
         if (wasActive && removeReason === 'purchased') {
             this.addToRecentProducts(cardId);
         }
-
-        // Use requestAnimationFrame for smoother rendering
-        requestAnimationFrame(() => {
-            this.renderStoreDetail(this.currentStore);
-        });
-        setTimeout(() => this.saveBoardCache(), 0);
-
-        try {
-            await this.moveCard(cardId, targetListId);
-            this.removePendingMove(cardId);
-            await this.recordOrQueueCardHistory(historyEntry);
-            this.saveBoardCache();
-        } catch (error) {
-            if (this.isNetworkError(error)) {
-                this.enqueueCardMove(cardId, targetListId, historyEntry);
-                this.showToast('Cambio guardado offline. Se sincronizara al volver la conexion.');
-                return;
-            }
-
-            card.idList = previousListId;
-            this.saveBoardCache();
-            requestAnimationFrame(() => {
-                this.renderStoreDetail(this.currentStore);
-            });
-            this.showToast('Error: ' + error.message);
-        }
+        this.renderAfterCardMove();
+        this.saveBoardCacheSoon();
+        this.persistCardMove(card, previousListId, targetListId, historyEntry);
     }
 
     refresh({ background = false } = {}) {
@@ -2176,52 +2176,37 @@ class TrelloShoppingApp {
         const previousListId = card.idList;
         card.idList = targetList.id;
 
-        // Track before render so purchased products are ordered as recent immediately.
         if (isCurrentlyActive && removeReason === 'purchased') {
             this.addToRecentProducts(cardId);
         }
-
-        // Re-render immediately with requestAnimationFrame
-        requestAnimationFrame(() => {
-            if (this.currentView === 'stores') {
-                this.renderStoreCards();
-            } else if (this.currentView === 'detail') {
-                this.renderStoreDetail(this.currentStore);
-            } else if (this.currentView === 'shopping') {
-                this.renderShoppingView(document.getElementById('shopping-mode-container'));
-            }
-        });
-        setTimeout(() => this.saveBoardCache(), 0);
-
-        try {
-            await this.moveCard(cardId, targetList.id);
-            this.removePendingMove(cardId);
-            await this.recordOrQueueCardHistory(historyEntry);
-            this.saveBoardCache();
-        } catch (error) {
-            if (this.isNetworkError(error)) {
-                this.enqueueCardMove(cardId, targetList.id, historyEntry);
-                this.showToast('Cambio guardado offline. Se sincronizara al volver la conexion.');
-                return;
-            }
-
-            card.idList = previousListId;
-            this.saveBoardCache();
-            requestAnimationFrame(() => {
-                if (this.currentView === 'stores') {
-                    this.renderStoreCards();
-                } else if (this.currentView === 'detail') {
-                    this.renderStoreDetail(this.currentStore);
-                } else if (this.currentView === 'shopping') {
-                    this.renderShoppingView(document.getElementById('shopping-mode-container'));
-                }
-            });
-            this.showToast('Error: ' + error.message);
-            return;
-        }
+        this.renderAfterCardMove();
+        this.saveBoardCacheSoon();
+        this.persistCardMove(card, previousListId, targetList.id, historyEntry);
 
         const action = isCurrentlyActive ? 'quitado de' : 'añadido a';
         this.showToast(`${card.name} ${action} la lista`);
+    }
+
+    persistCardMove(card, previousListId, targetListId, historyEntry) {
+        window.setTimeout(async () => {
+            try {
+                await this.moveCard(card.id, targetListId);
+                this.removePendingMove(card.id);
+                await this.recordOrQueueCardHistory(historyEntry);
+                this.saveBoardCacheSoon();
+            } catch (error) {
+                if (this.isNetworkError(error)) {
+                    this.enqueueCardMove(card.id, targetListId, historyEntry);
+                    this.showToast('Cambio guardado offline. Se sincronizara al volver la conexion.');
+                    return;
+                }
+
+                card.idList = previousListId;
+                this.saveBoardCacheSoon();
+                this.renderAfterCardMove();
+                this.showToast('Error: ' + error.message);
+            }
+        }, 0);
     }
 
     enqueueCardMove(cardId, targetListId, history = null) {
