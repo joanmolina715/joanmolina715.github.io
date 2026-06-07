@@ -176,6 +176,14 @@ class TrelloShoppingApp {
         }
     }
 
+    isSearchActive() {
+        if (this.currentView !== 'detail') return false;
+
+        const searchInput = document.getElementById('product-search-inline');
+        const hasSearchText = this.searchQuery && this.searchQuery.trim().length > 0;
+        return hasSearchText || document.activeElement === searchInput;
+    }
+
     hydrateFromCache() {
         const cached = this.loadBoardCache();
         if (!cached?.board || !cached?.lists || !cached?.cards || !cached?.labels) {
@@ -256,6 +264,7 @@ class TrelloShoppingApp {
     async backgroundRefresh() {
         if (!this.selectedBoardId || this.isRefreshing || this.isSyncing) return;
         if (document.visibilityState === 'hidden') return;
+        if (this.isSearchActive()) return;
 
         if (this.loadPendingMoves().length > 0) {
             await this.syncPendingMovesAndRefresh({ silent: true });
@@ -752,6 +761,7 @@ class TrelloShoppingApp {
             this.serverReachable = true;
             this.saveBoardCache();
             this.updateConnectionStatus();
+            if (background && this.isSearchActive()) return;
             this.renderCurrentView();
 
         } catch (error) {
