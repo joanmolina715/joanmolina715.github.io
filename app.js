@@ -56,6 +56,13 @@ class TrelloShoppingApp {
         this.apiKey = localStorage.getItem('trello_api_key') || '';
         this.apiToken = localStorage.getItem('trello_api_token') || '';
         this.selectedBoardId = localStorage.getItem('trello_board_id') || '';
+        this.isOnline = navigator.onLine;
+        this.serverReachable = navigator.onLine;
+        this.isSyncing = false;
+        this.isRefreshing = false;
+        this.pendingSyncTimer = null;
+        this.backgroundRefreshTimer = null;
+        this.backgroundRefreshMs = 8000;
 
         console.log('📦 Estado inicial:', {
             hasApiKey: !!this.apiKey,
@@ -87,6 +94,185 @@ class TrelloShoppingApp {
         this.recentProducts = this.loadRecentProducts();
 
         this.init();
+    }
+
+    getBoardCacheKey(boardId = this.selectedBoardId) {
+        return `trello_board_cache_${boardId}`;
+    }
+
+    getPendingMovesKey(boardId = this.selectedBoardId) {
+        return `trello_pending_card_moves_${boardId}`;
+    }
+
+    loadPendingMoves() {
+        if (!this.selectedBoardId) return [];
+        try {
+            return JSON.parse(localStorage.getItem(this.getPendingMovesKey()) || '[]');
+        } catch (error) {
+            return [];
+        }
+    }
+
+    savePendingMoves(moves) {
+        if (!this.selectedBoardId) return;
+        localStorage.setItem(this.getPendingMovesKey(), JSON.stringify(moves));
+        this.updateConnectionStatus();
+        this.schedulePendingSync();
+    }
+
+    saveBoardCache() {
+        if (!this.selectedBoardId || !this.board) return;
+
+        const cache = {
+            version: 1,
+            cachedAt: new Date().toISOString(),
+            board: this.board,
+            lists: this.lists,
+            cards: this.cards,
+            labels: this.labels
+        };
+
+        localStorage.setItem(this.getBoardCacheKey(), JSON.stringify(cache));
+    }
+
+    loadBoardCache() {
+        if (!this.selectedBoardId) return null;
+
+        try {
+            const saved = localStorage.getItem(this.getBoardCacheKey());
+            return saved ? JSON.parse(saved) : null;
+        } catch (error) {
+            console.warn('No se pudo leer la cache local:', error);
+            return null;
+        }
+    }
+
+    applyBoardData({ board, lists, cards, labels }) {
+        this.board = board;
+        this.lists = lists || [];
+        this.cards = cards || [];
+        this.labels = labels || [];
+
+        this.allProductsList = this.lists.find(l => l.name === this.config.listNames.allProducts);
+        this.activeList = this.lists.find(l => l.name === this.config.listNames.activeList);
+    }
+
+    renderCurrentView() {
+        if (this.currentView === 'stores') {
+            this.showStoreCards();
+        } else if (this.currentView === 'detail') {
+            const currentStoreId = this.currentStore?.id;
+            const storeLabel = this.labels.find(l => l.id === currentStoreId);
+            if (storeLabel) {
+                this.currentStore = storeLabel;
+                this.showStoreDetail(storeLabel);
+            } else {
+                this.showStoreCards();
+            }
+        } else if (this.currentView === 'shopping') {
+            const selectedStoreId = this.selectedStore?.id;
+            this.selectedStore = selectedStoreId ? this.labels.find(l => l.id === selectedStoreId) : null;
+            this.renderShoppingMode();
+        }
+    }
+
+    hydrateFromCache() {
+        const cached = this.loadBoardCache();
+        if (!cached?.board || !cached?.lists || !cached?.cards || !cached?.labels) {
+            return false;
+        }
+
+        this.applyBoardData(cached);
+        this.showScreen('main-app');
+        this.showStoreCards();
+        this.showToast('Mostrando ultima lista guardada');
+        return true;
+    }
+
+    isNetworkError(error) {
+        return !navigator.onLine || error?.name === 'TypeError';
+    }
+
+    updateConnectionStatus() {
+        const pendingCount = this.loadPendingMoves().length;
+        const statusEls = document.querySelectorAll('[data-connection-status]');
+        const offline = !navigator.onLine || !this.serverReachable;
+
+        statusEls.forEach(el => {
+            el.classList.toggle('offline', offline);
+            el.classList.toggle('syncing', !offline && (this.isSyncing || this.isRefreshing || pendingCount > 0));
+
+            if (offline) {
+                el.textContent = pendingCount > 0 ? `Offline · ${pendingCount} pendiente${pendingCount === 1 ? '' : 's'}` : 'Offline';
+            } else if (pendingCount > 0) {
+                el.textContent = `${pendingCount} pendiente${pendingCount === 1 ? '' : 's'}`;
+            } else if (this.isRefreshing) {
+                el.textContent = 'Actualizando';
+            } else if (this.isSyncing) {
+                el.textContent = 'Sincronizando';
+            } else {
+                el.textContent = 'Online';
+            }
+        });
+    }
+
+    setupConnectivityHandlers() {
+        window.addEventListener('online', () => {
+            this.isOnline = true;
+            this.serverReachable = true;
+            this.updateConnectionStatus();
+            this.syncPendingMovesAndRefresh({ silent: false });
+        });
+
+        window.addEventListener('offline', () => {
+            this.isOnline = false;
+            this.serverReachable = false;
+            this.updateConnectionStatus();
+            this.showToast('Modo offline: los cambios se guardaran localmente');
+        });
+
+        window.addEventListener('focus', () => {
+            this.syncPendingMovesAndRefresh({ silent: true });
+        });
+
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') {
+                this.syncPendingMovesAndRefresh({ silent: true });
+            }
+        });
+
+        this.schedulePendingSync();
+        this.startBackgroundRefresh();
+    }
+
+    startBackgroundRefresh() {
+        if (this.backgroundRefreshTimer) return;
+
+        this.backgroundRefreshTimer = window.setInterval(() => {
+            this.backgroundRefresh();
+        }, this.backgroundRefreshMs);
+    }
+
+    async backgroundRefresh() {
+        if (!this.selectedBoardId || this.isRefreshing || this.isSyncing) return;
+        if (document.visibilityState === 'hidden') return;
+
+        if (this.loadPendingMoves().length > 0) {
+            await this.syncPendingMovesAndRefresh({ silent: true });
+            return;
+        }
+
+        await this.loadBoard({ background: true });
+    }
+
+    registerServiceWorker() {
+        if (!('serviceWorker' in navigator)) return;
+
+        navigator.serviceWorker.register('sw.js')
+            .then(registration => registration.update())
+            .catch(error => {
+                console.warn('No se pudo registrar el service worker:', error);
+            });
     }
 
     // Load recent products from localStorage
@@ -169,12 +355,16 @@ class TrelloShoppingApp {
 
         this.bindEvents();
         this.loadTheme();
+        this.setupConnectivityHandlers();
+        this.registerServiceWorker();
+        this.updateConnectionStatus();
 
         if (this.apiKey && this.apiToken) {
             console.log('✅ Credenciales encontradas en localStorage');
             if (this.selectedBoardId) {
                 console.log('📋 Cargando tablero:', this.selectedBoardId);
-                await this.loadBoard();
+                const restoredFromCache = this.hydrateFromCache();
+                await this.loadBoard({ background: restoredFromCache });
             } else {
                 console.log('📋 Cargando lista de tableros...');
                 await this.loadBoards();
@@ -524,10 +714,27 @@ class TrelloShoppingApp {
         await this.loadBoard();
     }
 
-    async loadBoard() {
-        this.showScreen('main-app');
+    async loadBoard({ background = false, skipPendingSync = false } = {}) {
+        if (!background) {
+            this.showScreen('main-app');
+        }
 
         try {
+            this.isRefreshing = true;
+            this.updateConnectionStatus();
+
+            if (!skipPendingSync) {
+                const synced = await this.syncPendingMoves({ silent: true });
+                if (!synced && this.loadPendingMoves().length > 0) {
+                    this.updateConnectionStatus();
+                    this.renderCurrentView();
+                    if (!background) {
+                        this.showToast('Hay cambios pendientes. No actualizo desde Trello hasta sincronizarlos.');
+                    }
+                    return;
+                }
+            }
+
             // Load board data
             const [board, lists, cards, labels] = await Promise.all([
                 this.getBoard(this.selectedBoardId),
@@ -536,23 +743,37 @@ class TrelloShoppingApp {
                 this.getLabels(this.selectedBoardId)
             ]);
 
-            this.board = board;
-            this.lists = lists;
-            this.cards = cards;
-            this.labels = labels;
-
-            // Find or create the required lists
-            this.allProductsList = lists.find(l => l.name === this.config.listNames.allProducts);
-            this.activeList = lists.find(l => l.name === this.config.listNames.activeList);
+            this.applyBoardData({ board, lists, cards, labels });
 
             if (!this.allProductsList || !this.activeList) {
                 await this.setupBoardStructure();
             }
 
-            this.showStoreCards();
+            this.serverReachable = true;
+            this.saveBoardCache();
+            this.updateConnectionStatus();
+            this.renderCurrentView();
 
         } catch (error) {
+            this.serverReachable = false;
+
+            if (!this.board && this.hydrateFromCache()) {
+                this.updateConnectionStatus();
+                return;
+            }
+
+            if (this.isNetworkError(error)) {
+                this.updateConnectionStatus();
+                if (!background) {
+                    this.showToast('Sin conexion con Trello. Usando la lista guardada.');
+                }
+                return;
+            }
+
             this.showToast('Error cargando tablero: ' + error.message);
+        } finally {
+            this.isRefreshing = false;
+            this.updateConnectionStatus();
         }
     }
 
@@ -1353,6 +1574,7 @@ class TrelloShoppingApp {
                 card.desc = descInput;
                 card.idLabels = newLabels;
             }
+            this.saveBoardCache();
 
             this.showToast('Guardado');
             this.showProductDetail(cardId);
@@ -1394,6 +1616,8 @@ class TrelloShoppingApp {
             this.addToRecentProducts(cardId);
         }
 
+        this.saveBoardCache();
+
         // Use requestAnimationFrame for smoother rendering
         requestAnimationFrame(() => {
             this.renderStoreDetail(this.currentStore);
@@ -1401,9 +1625,17 @@ class TrelloShoppingApp {
 
         try {
             await this.moveCard(cardId, targetListId);
+            this.removePendingMove(cardId);
+            this.saveBoardCache();
         } catch (error) {
-            // Rollback on error
+            if (this.isNetworkError(error)) {
+                this.enqueueCardMove(cardId, targetListId);
+                this.showToast('Cambio guardado offline. Se sincronizara al volver la conexion.');
+                return;
+            }
+
             card.idList = previousListId;
+            this.saveBoardCache();
             requestAnimationFrame(() => {
                 this.renderStoreDetail(this.currentStore);
             });
@@ -1411,11 +1643,11 @@ class TrelloShoppingApp {
         }
     }
 
-    refresh() {
+    refresh({ background = false } = {}) {
         if (this.currentView === 'stores') {
-            this.loadBoard();
+            this.loadBoard({ background });
         } else if (this.currentView === 'detail') {
-            this.loadBoard().then(() => {
+            this.loadBoard({ background }).then(() => {
                 if (this.currentStore) {
                     const storeLabel = this.labels.find(l => l.id === this.currentStore.id);
                     if (storeLabel) {
@@ -1424,7 +1656,7 @@ class TrelloShoppingApp {
                 }
             });
         } else if (this.currentView === 'shopping') {
-            this.loadBoard().then(() => {
+            this.loadBoard({ background }).then(() => {
                 this.showShoppingMode();
             });
         }
@@ -1605,6 +1837,7 @@ class TrelloShoppingApp {
         // Optimistic update - update UI immediately
         const previousListId = card.idList;
         card.idList = targetList.id;
+        this.saveBoardCache();
 
         // Re-render immediately with requestAnimationFrame
         requestAnimationFrame(() => {
@@ -1619,9 +1852,17 @@ class TrelloShoppingApp {
 
         try {
             await this.moveCard(cardId, targetList.id);
+            this.removePendingMove(cardId);
+            this.saveBoardCache();
         } catch (error) {
-            // Rollback on error
+            if (this.isNetworkError(error)) {
+                this.enqueueCardMove(cardId, targetList.id);
+                this.showToast('Cambio guardado offline. Se sincronizara al volver la conexion.');
+                return;
+            }
+
             card.idList = previousListId;
+            this.saveBoardCache();
             requestAnimationFrame(() => {
                 if (this.currentView === 'stores') {
                     this.renderStoreCards();
@@ -1643,6 +1884,99 @@ class TrelloShoppingApp {
         }
         
         this.showToast(`${card.name} ${action} la lista`);
+    }
+
+    enqueueCardMove(cardId, targetListId) {
+        const moves = this.loadPendingMoves().filter(move => move.cardId !== cardId);
+        moves.push({
+            cardId,
+            targetListId,
+            createdAt: new Date().toISOString()
+        });
+        console.log('📦 Cambio offline encolado:', { cardId, targetListId, pending: moves.length });
+        this.savePendingMoves(moves);
+        this.saveBoardCache();
+    }
+
+    removePendingMove(cardId) {
+        const moves = this.loadPendingMoves();
+        const nextMoves = moves.filter(move => move.cardId !== cardId);
+        if (nextMoves.length !== moves.length) {
+            this.savePendingMoves(nextMoves);
+        }
+    }
+
+    schedulePendingSync() {
+        if (this.pendingSyncTimer || this.loadPendingMoves().length === 0) return;
+
+        this.pendingSyncTimer = window.setTimeout(async () => {
+            this.pendingSyncTimer = null;
+            await this.syncPendingMovesAndRefresh({ silent: true });
+
+            if (this.loadPendingMoves().length > 0) {
+                this.schedulePendingSync();
+            }
+        }, 5000);
+    }
+
+    async syncPendingMovesAndRefresh({ silent = false } = {}) {
+        if (!this.selectedBoardId) return false;
+
+        const hadMoves = this.loadPendingMoves().length > 0;
+        const synced = await this.syncPendingMoves({ silent });
+
+        if (hadMoves && synced) {
+            await this.loadBoard({ background: true, skipPendingSync: true });
+        }
+
+        return synced;
+    }
+
+    async syncPendingMoves({ silent = false } = {}) {
+        const moves = this.loadPendingMoves();
+        if (moves.length === 0 || this.isSyncing) {
+            this.updateConnectionStatus();
+            return moves.length === 0;
+        }
+
+        console.log('🔄 Sincronizando cambios offline:', moves);
+        this.isSyncing = true;
+        this.updateConnectionStatus();
+
+        const remaining = [];
+
+        for (const move of moves) {
+            try {
+                await this.moveCard(move.cardId, move.targetListId);
+                this.serverReachable = true;
+                console.log('✅ Cambio offline sincronizado:', move);
+            } catch (error) {
+                remaining.push(move);
+                console.error('❌ Error sincronizando cambio offline:', move, error);
+
+                if (this.isNetworkError(error)) {
+                    this.serverReachable = false;
+                    const moveIndex = moves.indexOf(move);
+                    remaining.push(...moves.slice(moveIndex + 1));
+                    break;
+                }
+
+                console.warn('No se pudo sincronizar un cambio pendiente:', error);
+            }
+        }
+
+        this.savePendingMoves(remaining);
+        this.saveBoardCache();
+        this.isSyncing = false;
+        this.updateConnectionStatus();
+
+        if (!silent && moves.length > 0 && remaining.length === 0) {
+            this.showToast('Cambios offline sincronizados');
+        } else if (!silent && remaining.length > 0) {
+            this.showToast(`No se pudieron sincronizar ${remaining.length} cambio${remaining.length === 1 ? '' : 's'}. Se intentara de nuevo.`);
+        }
+
+        return remaining.length === 0;
     }
 
     showSettings() {
@@ -1815,6 +2149,7 @@ class TrelloShoppingApp {
 
             // Clear local cache
             this.cards = [];
+            this.saveBoardCache();
 
             let message = `✅ ${deleted} productos eliminados`;
             if (failed > 0) {
@@ -1908,6 +2243,7 @@ class TrelloShoppingApp {
 
             // Remove from local cache
             this.cards = this.cards.filter(c => c.id !== cardId);
+            this.saveBoardCache();
 
             this.showToast(`✅ "${productName}" eliminado`);
 
@@ -2097,6 +2433,7 @@ class TrelloShoppingApp {
             } else {
                 this.cards.push(card);
             }
+            this.saveBoardCache();
 
             this.closeAddModal();
             this.resetAddModal();
@@ -2314,6 +2651,7 @@ class TrelloShoppingApp {
             if (skipped > 0) message += ` | Omitidos (duplicados): ${skipped}`;
             if (labelsCreated > 0) message += ` | Labels creados: ${labelsCreated}`;
             
+            this.saveBoardCache();
             this.showToast(message);
 
             // Refresh view
