@@ -64,6 +64,7 @@ class TrelloShoppingApp {
         this.pendingSyncTimer = null;
         this.backgroundRefreshTimer = null;
         this.backgroundRefreshMs = 8000;
+        this.inFlightCardMoves = new Set();
 
         console.log('📦 Estado inicial:', {
             hasApiKey: !!this.apiKey,
@@ -123,6 +124,23 @@ class TrelloShoppingApp {
         localStorage.setItem(this.getPendingMovesKey(), JSON.stringify(moves));
         this.updateConnectionStatus();
         this.schedulePendingSync();
+    }
+
+    applyPendingMovesToCards() {
+        const pendingMoves = this.loadPendingMoves();
+        if (pendingMoves.length === 0) return;
+
+        const latestMoveByCard = new Map();
+        pendingMoves.forEach(move => {
+            latestMoveByCard.set(move.cardId, move);
+        });
+
+        this.cards.forEach(card => {
+            const pendingMove = latestMoveByCard.get(card.id);
+            if (pendingMove) {
+                card.idList = pendingMove.targetListId;
+            }
+        });
     }
 
     loadPendingHistory() {
@@ -230,6 +248,7 @@ class TrelloShoppingApp {
 
         this.allProductsList = this.lists.find(l => l.name === this.config.listNames.allProducts);
         this.activeList = this.lists.find(l => l.name === this.config.listNames.activeList);
+        this.applyPendingMovesToCards();
     }
 
     renderCurrentView() {
@@ -341,7 +360,7 @@ class TrelloShoppingApp {
         if (document.visibilityState === 'hidden') return;
         if (this.isSearchActive()) return;
 
-        if (this.loadPendingMoves().length > 0) {
+        if (this.loadPendingMoves().length > 0 || this.loadPendingHistory().length > 0) {
             await this.syncPendingMovesAndRefresh({ silent: true });
             return;
         }
@@ -2224,7 +2243,10 @@ class TrelloShoppingApp {
     }
 
     persistCardMove(card, previousListId, targetListId, historyEntry) {
+        this.enqueueCardMove(card.id, targetListId, historyEntry);
+
         window.setTimeout(async () => {
+            this.inFlightCardMoves.add(card.id);
             try {
                 await this.moveCard(card.id, targetListId);
                 this.removePendingMove(card.id);
@@ -2232,15 +2254,17 @@ class TrelloShoppingApp {
                 this.saveBoardCacheSoon();
             } catch (error) {
                 if (this.isNetworkError(error)) {
-                    this.enqueueCardMove(card.id, targetListId, historyEntry);
                     this.showToast('Cambio guardado offline. Se sincronizara al volver la conexion.');
                     return;
                 }
 
+                this.removePendingMove(card.id);
                 card.idList = previousListId;
                 this.saveBoardCacheSoon();
                 this.renderAfterCardMove();
                 this.showToast('Error: ' + error.message);
+            } finally {
+                this.inFlightCardMoves.delete(card.id);
             }
         }, 0);
     }
@@ -2307,6 +2331,11 @@ class TrelloShoppingApp {
         const remaining = [];
 
         for (const move of moves) {
+            if (this.inFlightCardMoves.has(move.cardId)) {
+                remaining.push(move);
+                continue;
+            }
+
             try {
                 await this.moveCard(move.cardId, move.targetListId);
                 this.serverReachable = true;
@@ -2343,9 +2372,12 @@ class TrelloShoppingApp {
             }
         }
 
-        this.savePendingMoves(remaining);
+        const currentPendingMoves = this.loadPendingMoves();
+        const currentPendingKeys = new Set(currentPendingMoves.map(move => `${move.cardId}:${move.createdAt}`));
+        const remainingStillPending = remaining.filter(move => currentPendingKeys.has(`${move.cardId}:${move.createdAt}`));
+        this.savePendingMoves(remainingStillPending);
 
-        if (remaining.length === 0) {
+        if (remainingStillPending.length === 0) {
             const historyEntries = this.loadPendingHistory();
             const historyRemaining = [];
             for (const entry of historyEntries) {
