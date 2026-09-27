@@ -815,29 +815,7 @@ class TrelloShoppingApp {
         // Add product modal
         document.getElementById('add-product-detail-btn')?.addEventListener('click', () => this.openAddModal());
         document.getElementById('search-product-detail-btn')?.addEventListener('click', () => this.focusSearchInput());
-        const searchInput = document.getElementById('product-search-inline');
-        const clearSearchBtn = document.getElementById('search-clear-btn');
-        searchInput?.addEventListener('input', (e) => {
-            clearTimeout(this.searchTimeout);
-            this.searchQuery = e.target.value;
-            clearSearchBtn?.classList.toggle('visible', this.searchQuery.length > 0);
-            this.searchTimeout = setTimeout(() => {
-                if (this.currentView === 'detail' && this.currentStore) {
-                    this.renderStoreDetail(this.currentStore);
-                }
-            }, 300);
-        });
-        const clearSearch = (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            clearTimeout(this.searchTimeout);
-            this.searchQuery = '';
-            searchInput.value = '';
-            clearSearchBtn.classList.remove('visible');
-            this.renderStoreDetail(this.currentStore);
-            searchInput.focus();
-        };
-        clearSearchBtn?.addEventListener('click', clearSearch);
+        this.setupSearchControls();
         document.getElementById('modal-close')?.addEventListener('click', () => this.closeAddModal());
         document.getElementById('add-modal')?.addEventListener('click', (e) => {
             if (e.target.id === 'add-modal') this.closeAddModal();
@@ -862,6 +840,50 @@ class TrelloShoppingApp {
             }
         });
 
+    }
+
+    setupSearchControls() {
+        let searchInput = document.getElementById('product-search-inline');
+        let clearSearchBtn = document.getElementById('search-clear-btn');
+
+        // Older cached HTML has no permanent search field. Add it before the list.
+        if (!searchInput || !clearSearchBtn) {
+            const productsContainer = document.getElementById('products-container');
+            if (!productsContainer) return null;
+
+            const searchContainer = document.createElement('div');
+            searchContainer.className = 'search-container-inline';
+            searchContainer.style.margin = '0 20px';
+            searchContainer.innerHTML = '<input type="text" class="search-input" id="product-search-inline" placeholder="Buscar producto..." aria-label="Buscar producto"><button type="button" class="search-clear-btn" id="search-clear-btn" aria-label="Limpiar búsqueda"></button>';
+            productsContainer.before(searchContainer);
+            searchInput = searchContainer.querySelector('#product-search-inline');
+            clearSearchBtn = searchContainer.querySelector('#search-clear-btn');
+        }
+
+        if (searchInput.dataset.searchBound === 'true') return { searchInput, clearSearchBtn };
+        searchInput.dataset.searchBound = 'true';
+        searchInput.addEventListener('input', (e) => {
+            clearTimeout(this.searchTimeout);
+            this.searchQuery = e.target.value;
+            clearSearchBtn.classList.toggle('visible', this.searchQuery.length > 0);
+            this.searchTimeout = setTimeout(() => {
+                if (this.currentView === 'detail' && this.currentStore) {
+                    this.renderStoreDetail(this.currentStore);
+                }
+            }, 300);
+        });
+        const clearSearch = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            clearTimeout(this.searchTimeout);
+            this.searchQuery = '';
+            searchInput.value = '';
+            clearSearchBtn.classList.remove('visible');
+            this.renderStoreDetail(this.currentStore);
+            searchInput.focus();
+        };
+        clearSearchBtn.addEventListener('click', clearSearch);
+        return { searchInput, clearSearchBtn };
     }
 
     // Modal state
@@ -1282,8 +1304,11 @@ class TrelloShoppingApp {
         this.currentStore = storeLabel;
         this.searchQuery = '';
         clearTimeout(this.searchTimeout);
-        document.getElementById('product-search-inline').value = '';
-        document.getElementById('search-clear-btn').classList.remove('visible');
+        const searchControls = this.setupSearchControls();
+        if (searchControls) {
+            searchControls.searchInput.value = '';
+            searchControls.clearSearchBtn.classList.remove('visible');
+        }
 
         document.getElementById('store-cards-view').classList.add('hidden');
         document.getElementById('shopping-mode-view').classList.add('hidden');
@@ -1295,11 +1320,11 @@ class TrelloShoppingApp {
     }
 
     focusSearchInput() {
-        const searchInput = document.getElementById('product-search-inline');
-        if (!searchInput) return;
+        const searchControls = this.setupSearchControls();
+        if (!searchControls) return;
 
         window.scrollTo(0, 0);
-        searchInput.focus({ preventScroll: true });
+        searchControls.searchInput.focus({ preventScroll: true });
     }
 
     renderStoreCards() {
