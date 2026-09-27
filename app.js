@@ -539,6 +539,7 @@ class TrelloShoppingApp {
             action,
             reason,
             comment: action === 'removed' ? this.getActiveComment(card) : '',
+            urgent: action === 'removed' && this.getActiveUrgent(card),
             createdAt: new Date().toISOString()
         };
     }
@@ -546,7 +547,8 @@ class TrelloShoppingApp {
     formatHistoryComment(entry) {
         const actionLabel = this.getHistoryActionLabel(entry);
         const comment = entry.comment ? ` · Comentario: "${entry.comment}"` : '';
-        return `[ShoppingList] ${entry.user} ${actionLabel} "${entry.productName}"${comment}`;
+        const urgent = entry.urgent ? ' · Urgente' : '';
+        return `[ShoppingList] ${entry.user} ${actionLabel} "${entry.productName}"${comment}${urgent}`;
     }
 
     parseHistoryComment(action) {
@@ -599,20 +601,23 @@ class TrelloShoppingApp {
             .replace(/'/g, '&#039;');
     }
 
-    // The active-list comment lives in a marked suffix of Trello's card description.
-    // Keep it separate from the product's permanent notes everywhere in the UI.
+    // Active-list settings live in marked suffixes of Trello's card description.
+    // Keep them separate from the product's permanent notes everywhere in the UI.
     splitCardDescription(desc = '') {
         const value = String(desc || '');
-        const match = value.match(/(?:\n\n)?<!-- shopping-list-active-comment:([^\n]*?) -->$/);
-        if (!match) return { description: value, comment: '' };
+        const urgentMatch = value.match(/(?:\n\n)?<!-- shopping-list-active-urgent:true -->$/);
+        const withoutUrgency = urgentMatch ? value.slice(0, urgentMatch.index) : value;
+        const commentMatch = withoutUrgency.match(/(?:\n\n)?<!-- shopping-list-active-comment:([^\n]*?) -->$/);
+        if (!commentMatch) return { description: withoutUrgency, comment: '', urgent: !!urgentMatch };
 
         try {
             return {
-                description: value.slice(0, match.index),
-                comment: decodeURIComponent(match[1])
+                description: withoutUrgency.slice(0, commentMatch.index),
+                comment: decodeURIComponent(commentMatch[1]),
+                urgent: !!urgentMatch
             };
         } catch (error) {
-            return { description: value, comment: '' };
+            return { description: withoutUrgency, comment: '', urgent: !!urgentMatch };
         }
     }
 
@@ -626,10 +631,16 @@ class TrelloShoppingApp {
             : '';
     }
 
-    composeCardDescription(description, comment) {
-        return comment
-            ? `${description}\n\n<!-- shopping-list-active-comment:${encodeURIComponent(comment)} -->`
-            : description;
+    getActiveUrgent(card) {
+        return card.idList === this.activeList?.id
+            && this.splitCardDescription(card.desc).urgent;
+    }
+
+    composeCardDescription(description, comment, urgent = false) {
+        let value = description;
+        if (comment) value += `\n\n<!-- shopping-list-active-comment:${encodeURIComponent(comment)} -->`;
+        if (urgent) value += '\n\n<!-- shopping-list-active-urgent:true -->';
+        return value;
     }
 
     normalizeProductName(str) {
@@ -1321,6 +1332,8 @@ class TrelloShoppingApp {
         
         // Group into active and available (active list is never filtered)
         const activeCards = allStoreCards.filter(c => c.idList === this.activeList.id);
+        const urgentCards = activeCards.filter(card => this.getActiveUrgent(card));
+        const regularActiveCards = activeCards.filter(card => !this.getActiveUrgent(card));
         
         // Filter available cards by search query (prefix match, accent-insensitive)
         let availableCards = allStoreCards.filter(c => c.idList === this.allProductsList.id);
@@ -1346,13 +1359,23 @@ class TrelloShoppingApp {
 
         let html = '';
 
-        // Active products section (always show, even if empty)
-        html += `
-            <div class="products-section">
-                <div class="products-section-title">En lista (${activeCards.length})</div>
-                ${activeCards.length > 0 ? activeCards.map(card => this.renderDetailProduct(card, true)).join('') : ''}
-            </div>
-        `;
+        if (urgentCards.length > 0) {
+            html += `
+                <div class="products-section urgent-products-section">
+                    <div class="products-section-title">🚨 Urgentes (${urgentCards.length})</div>
+                    ${urgentCards.map(card => this.renderDetailProduct(card, true)).join('')}
+                </div>
+            `;
+        }
+
+        if (regularActiveCards.length > 0 || activeCards.length === 0) {
+            html += `
+                <div class="products-section">
+                    <div class="products-section-title">En lista (${regularActiveCards.length})</div>
+                    ${regularActiveCards.map(card => this.renderDetailProduct(card, true)).join('')}
+                </div>
+            `;
+        }
 
         // Search input between "En lista" and available products
         html += `
@@ -1704,6 +1727,16 @@ class TrelloShoppingApp {
                         ${this.getCardDescription(card) ? `<p class="product-detail-desc">${this.escapeHtml(this.getCardDescription(card))}</p>` : '<p class="product-detail-desc empty">Sin notas</p>'}
                     </div>
                     ${card.idList === this.activeList?.id ? `
+                        <div class="product-detail-section product-urgent-setting">
+                            <div>
+                                <span class="product-detail-label">Urgente</span>
+                                <p class="product-urgent-hint">Destacar este producto al principio de la lista</p>
+                            </div>
+                            <label class="ios-switch">
+                                <input type="checkbox" id="active-product-urgent" role="switch" aria-label="Marcar producto como urgente" ${this.getActiveUrgent(card) ? 'checked' : ''}>
+                                <span class="ios-switch-track" aria-hidden="true"></span>
+                            </label>
+                        </div>
                         <div class="product-detail-section">
                             <label class="product-detail-label" for="active-product-comment">💬 Comentario para esta compra</label>
                             <input type="text" id="active-product-comment" class="modal-input" maxlength="200" placeholder="Por ejemplo: dos docenas" value="${this.escapeHtml(this.getActiveComment(card))}">
@@ -1734,6 +1767,7 @@ class TrelloShoppingApp {
             document.getElementById('active-product-comment')?.addEventListener('keydown', event => {
                 if (event.key === 'Enter') this.saveActiveComment(cardId);
             });
+            document.getElementById('active-product-urgent')?.addEventListener('change', () => this.saveActiveUrgency(cardId));
 
             // Load images with OAuth after HTML is rendered
             this.loadDetailImages(images);
@@ -1745,15 +1779,29 @@ class TrelloShoppingApp {
     async saveActiveComment(cardId) {
         const card = this.cards.find(c => c.id === cardId);
         const input = document.getElementById('active-product-comment');
-        const button = document.getElementById('save-active-comment');
-        if (!card || !input || !button || card.idList !== this.activeList?.id || button.disabled) return;
+        if (!card || !input) return;
+        await this.saveActiveListSettings(cardId, input.value.trim(), this.getActiveUrgent(card), 'Comentario guardado');
+    }
 
-        const comment = input.value.trim();
+    async saveActiveUrgency(cardId) {
+        const card = this.cards.find(c => c.id === cardId);
+        const toggle = document.getElementById('active-product-urgent');
+        if (!card || !toggle) return;
+        await this.saveActiveListSettings(cardId, this.getActiveComment(card), toggle.checked, 'Urgencia actualizada');
+    }
+
+    async saveActiveListSettings(cardId, comment, urgent, successMessage) {
+        const card = this.cards.find(c => c.id === cardId);
+        const button = document.getElementById('save-active-comment');
+        const toggle = document.getElementById('active-product-urgent');
+        if (!card || !button || !toggle || card.idList !== this.activeList?.id || button.disabled || toggle.disabled) return;
+
         const previousDesc = card.desc || '';
-        const nextDesc = this.composeCardDescription(this.getCardDescription(card), comment);
+        const nextDesc = this.composeCardDescription(this.getCardDescription(card), comment, urgent);
         if (nextDesc === previousDesc) return;
 
         button.disabled = true;
+        toggle.disabled = true;
         card.desc = nextDesc;
         const pendingMove = this.enqueueCardMove(cardId, card.idList, null, nextDesc);
         this.saveBoardCache();
@@ -1765,13 +1813,14 @@ class TrelloShoppingApp {
             await this.moveCard(cardId, card.idList, nextDesc);
             this.removePendingMove(cardId, pendingMove.mutationId);
             if (pendingMove.history) await this.recordOrQueueCardHistory(pendingMove.history);
-            this.showToast('Comentario guardado');
+            this.showToast(successMessage);
         } catch (error) {
             if (this.isNetworkError(error)) {
-                this.showToast('Comentario guardado offline. Se sincronizará al volver la conexión.');
+                this.showToast('Cambio guardado offline. Se sincronizará al volver la conexión.');
             } else {
                 this.removePendingMove(cardId, pendingMove.mutationId);
                 if (card.desc === nextDesc) card.desc = previousDesc;
+                toggle.checked = this.getActiveUrgent(card);
                 this.saveBoardCache();
                 this.renderAfterCardMove();
                 this.showToast('Error: ' + error.message);
@@ -1779,6 +1828,7 @@ class TrelloShoppingApp {
         } finally {
             this.inFlightCardMoves.delete(cardId);
             button.disabled = false;
+            toggle.disabled = false;
         }
     }
 
@@ -1996,7 +2046,7 @@ class TrelloShoppingApp {
         if (!card) return;
         const nameInput = document.getElementById('edit-product-name').value.trim();
         const descInput = document.getElementById('edit-product-desc').value.trim();
-        const fullDesc = this.composeCardDescription(descInput, this.getActiveComment(card));
+        const fullDesc = this.composeCardDescription(descInput, this.getActiveComment(card), this.getActiveUrgent(card));
         const btn = document.getElementById('save-edit-btn');
         const newLabels = Array.from(this.editSelectedLabels);
 
@@ -2222,6 +2272,8 @@ class TrelloShoppingApp {
         // Get all products for this store
         const storeProducts = this.cards.filter(c => c.idLabels.includes(this.selectedStore.id));
         const activeStoreProducts = storeProducts.filter(c => c.idList === this.activeList?.id);
+        const urgentStoreProducts = activeStoreProducts.filter(card => this.getActiveUrgent(card));
+        const regularStoreProducts = activeStoreProducts.filter(card => !this.getActiveUrgent(card));
 
         // Get location labels (excluding store names), sorted alphabetically
         const storeNames = this.getStoreNames();
@@ -2241,21 +2293,33 @@ class TrelloShoppingApp {
                     </div>
                 </div>
 
-                <div class="shopping-active-list">
-                    <h3>📋 En tu lista (${activeStoreProducts.length})</h3>
         `;
 
-        if (activeStoreProducts.length > 0) {
-            html += '<div class="shopping-products">';
-            activeStoreProducts.forEach(card => {
-                html += this.renderShoppingProduct(card, true);
-            });
-            html += '</div>';
-        } else {
-            html += '<p class="empty-message">No hay productos de esta tienda en tu lista</p>';
+        if (urgentStoreProducts.length > 0) {
+            html += `
+                <div class="shopping-active-list urgent-products-section shopping-urgent-section">
+                    <h3>🚨 Urgentes (${urgentStoreProducts.length})</h3>
+                    <div class="shopping-products">
+                        ${urgentStoreProducts.map(card => this.renderShoppingProduct(card, true)).join('')}
+                    </div>
+                </div>
+            `;
         }
 
-        html += '</div>';
+        if (regularStoreProducts.length > 0 || activeStoreProducts.length === 0) {
+            html += `
+                    <div class="shopping-active-list">
+                        <h3>📋 En tu lista (${regularStoreProducts.length})</h3>
+            `;
+
+            if (regularStoreProducts.length > 0) {
+                html += `<div class="shopping-products">${regularStoreProducts.map(card => this.renderShoppingProduct(card, true)).join('')}</div>`;
+            } else {
+                html += '<p class="empty-message">No hay productos de esta tienda en tu lista</p>';
+            }
+
+            html += '</div>';
+        }
 
         // Group all store products by location
         html += '<div class="shopping-locations"><h3>🏠 Revisar por ubicación</h3>';
@@ -3182,6 +3246,7 @@ class TrelloShoppingApp {
                 name: card.name,
                 desc: this.getCardDescription(card),
                 ...(this.getActiveComment(card) ? { comment: this.getActiveComment(card) } : {}),
+                ...(this.getActiveUrgent(card) ? { urgent: true } : {}),
                 stores,
                 locations,
                 images,
@@ -3296,7 +3361,11 @@ class TrelloShoppingApp {
                     targetList.id,
                     product.name,
                     labelIds,
-                    this.composeCardDescription(product.desc || '', product.inList ? (product.comment || '') : '')
+                    this.composeCardDescription(
+                        product.desc || '',
+                        product.inList ? (product.comment || '') : '',
+                        !!(product.inList && product.urgent)
+                    )
                 );
                 
                 // Add images if available (URLs from export)
@@ -3352,6 +3421,7 @@ class TrelloShoppingApp {
                         Descarga todos tus productos en formato JSON incluyendo:<br>
                         • Nombre y descripción<br>
                         • Comentario actual de los productos en lista<br>
+                        • Indicador de urgencia de los productos en lista<br>
                         • Tiendas y ubicaciones (con colores)<br>
                         • URLs de imágenes<br>
                         • Configuración de labels disponibles
