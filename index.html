@@ -1088,12 +1088,27 @@
             margin-bottom: 20px;
         }
 
+        .active-comment-save {
+            margin-top: 10px;
+        }
+
         .product-detail-label {
             font-size: 13px;
             font-weight: 600;
             color: var(--text-secondary);
             margin-bottom: 8px;
             display: block;
+        }
+
+        .product-history-details > summary {
+            display: list-item;
+            cursor: pointer;
+            padding: 8px 0;
+            margin-bottom: 0;
+        }
+
+        .product-history-details[open] > summary {
+            margin-bottom: 8px;
         }
 
         .product-detail-tags {
@@ -1463,6 +1478,11 @@
         .shopping-product .product-name {
             font-size: 15px;
             font-weight: 500;
+            min-width: 0;
+        }
+
+        .shopping-product-info {
+            flex: 1;
             min-width: 0;
         }
 

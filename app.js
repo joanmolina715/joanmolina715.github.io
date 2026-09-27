@@ -538,13 +538,15 @@ class TrelloShoppingApp {
             user: this.getCurrentUserLabel(),
             action,
             reason,
+            comment: action === 'removed' ? this.getActiveComment(card) : '',
             createdAt: new Date().toISOString()
         };
     }
 
     formatHistoryComment(entry) {
         const actionLabel = this.getHistoryActionLabel(entry);
-        return `[ShoppingList] ${entry.user} ${actionLabel} "${entry.productName}"`;
+        const comment = entry.comment ? ` · Comentario: "${entry.comment}"` : '';
+        return `[ShoppingList] ${entry.user} ${actionLabel} "${entry.productName}"${comment}`;
     }
 
     parseHistoryComment(action) {
@@ -595,6 +597,39 @@ class TrelloShoppingApp {
             .replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;')
             .replace(/'/g, '&#039;');
+    }
+
+    // The active-list comment lives in a marked suffix of Trello's card description.
+    // Keep it separate from the product's permanent notes everywhere in the UI.
+    splitCardDescription(desc = '') {
+        const value = String(desc || '');
+        const match = value.match(/(?:\n\n)?<!-- shopping-list-active-comment:([^\n]*?) -->$/);
+        if (!match) return { description: value, comment: '' };
+
+        try {
+            return {
+                description: value.slice(0, match.index),
+                comment: decodeURIComponent(match[1])
+            };
+        } catch (error) {
+            return { description: value, comment: '' };
+        }
+    }
+
+    getCardDescription(card) {
+        return this.splitCardDescription(card.desc).description;
+    }
+
+    getActiveComment(card) {
+        return card.idList === this.activeList?.id
+            ? this.splitCardDescription(card.desc).comment
+            : '';
+    }
+
+    composeCardDescription(description, comment) {
+        return comment
+            ? `${description}\n\n<!-- shopping-list-active-comment:${encodeURIComponent(comment)} -->`
+            : description;
     }
 
     normalizeProductName(str) {
@@ -886,11 +921,12 @@ class TrelloShoppingApp {
         });
     }
 
-    async moveCard(cardId, listId) {
+    async moveCard(cardId, listId, desc) {
         return this.trelloFetch(`/cards/${cardId}`, {
             method: 'PUT',
             body: JSON.stringify({
-                idList: listId
+                idList: listId,
+                ...(desc !== undefined ? { desc } : {})
             })
         });
     }
@@ -1446,7 +1482,9 @@ class TrelloShoppingApp {
     }
 
     renderDetailProduct(card, isActive) {
-        const descText = card.desc ? card.desc.substring(0, 60) + (card.desc.length > 60 ? '...' : '') : '';
+        const description = this.getCardDescription(card);
+        const descText = description ? description.substring(0, 60) + (description.length > 60 ? '...' : '') : '';
+        const comment = isActive ? this.getActiveComment(card) : '';
 
         // Check if card has image attachment
         const imageAttachment = card.attachments?.find(a => a.mimeType?.startsWith('image/'));
@@ -1471,7 +1509,8 @@ class TrelloShoppingApp {
                 ${iconHtml}
                 <div class="detail-product-info">
                     <div class="detail-product-name">${card.name}</div>
-                    ${descText ? `<div class="detail-product-desc">${descText}</div>` : ''}
+                    ${descText ? `<div class="detail-product-desc">${this.escapeHtml(descText)}</div>` : ''}
+                    ${comment ? `<div class="detail-product-desc">${this.escapeHtml(comment)}</div>` : ''}
                 </div>
                 ${infoButton}
             </div>
@@ -1608,7 +1647,7 @@ class TrelloShoppingApp {
         try {
             // Fetch attachments and shopping history for this card
             const [attachments, history] = await Promise.all([
-                this.getCardAttachments(cardId),
+                this.getCardAttachments(cardId).catch(() => card.attachments || []),
                 this.getCardHistory(cardId)
             ]);
             const images = attachments.filter(a => a.mimeType?.startsWith('image/'));
@@ -1662,10 +1701,17 @@ class TrelloShoppingApp {
                     ` : ''}
                     <div class="product-detail-section">
                         <span class="product-detail-label">📝 Notas</span>
-                        ${card.desc ? `<p class="product-detail-desc">${card.desc}</p>` : '<p class="product-detail-desc empty">Sin notas</p>'}
+                        ${this.getCardDescription(card) ? `<p class="product-detail-desc">${this.escapeHtml(this.getCardDescription(card))}</p>` : '<p class="product-detail-desc empty">Sin notas</p>'}
                     </div>
-                    <div class="product-detail-section">
-                        <span class="product-detail-label">Historial</span>
+                    ${card.idList === this.activeList?.id ? `
+                        <div class="product-detail-section">
+                            <label class="product-detail-label" for="active-product-comment">💬 Comentario para esta compra</label>
+                            <input type="text" id="active-product-comment" class="modal-input" maxlength="200" placeholder="Por ejemplo: dos docenas" value="${this.escapeHtml(this.getActiveComment(card))}">
+                            <button class="btn btn-primary active-comment-save" id="save-active-comment">Guardar comentario</button>
+                        </div>
+                    ` : ''}
+                    <details class="product-detail-section product-history-details">
+                        <summary class="product-detail-label">Historial</summary>
                         ${history.length > 0 ? `
                             <div class="product-history">
                                 ${history.map(entry => `
@@ -1676,7 +1722,7 @@ class TrelloShoppingApp {
                                 `).join('')}
                             </div>
                         ` : '<p class="product-detail-desc empty">Sin historial</p>'}
-                    </div>
+                    </details>
                 </div>
                 <div class="product-detail-actions">
                     <button class="edit-product-btn" onclick="app.openEditMode('${cardId}')">✏️ Editar</button>
@@ -1684,10 +1730,55 @@ class TrelloShoppingApp {
                 </div>
             `;
 
+            document.getElementById('save-active-comment')?.addEventListener('click', () => this.saveActiveComment(cardId));
+            document.getElementById('active-product-comment')?.addEventListener('keydown', event => {
+                if (event.key === 'Enter') this.saveActiveComment(cardId);
+            });
+
             // Load images with OAuth after HTML is rendered
             this.loadDetailImages(images);
         } catch (error) {
             content.innerHTML = `<div class="empty-state"><p>Error: ${error.message}</p></div>`;
+        }
+    }
+
+    async saveActiveComment(cardId) {
+        const card = this.cards.find(c => c.id === cardId);
+        const input = document.getElementById('active-product-comment');
+        const button = document.getElementById('save-active-comment');
+        if (!card || !input || !button || card.idList !== this.activeList?.id || button.disabled) return;
+
+        const comment = input.value.trim();
+        const previousDesc = card.desc || '';
+        const nextDesc = this.composeCardDescription(this.getCardDescription(card), comment);
+        if (nextDesc === previousDesc) return;
+
+        button.disabled = true;
+        card.desc = nextDesc;
+        const pendingMove = this.enqueueCardMove(cardId, card.idList, null, nextDesc);
+        this.saveBoardCache();
+        if (this.currentView === 'detail') this.renderStoreDetail(this.currentStore);
+        if (this.currentView === 'shopping') this.renderShoppingView(document.getElementById('shopping-mode-container'));
+
+        this.inFlightCardMoves.add(cardId);
+        try {
+            await this.moveCard(cardId, card.idList, nextDesc);
+            this.removePendingMove(cardId, pendingMove.mutationId);
+            if (pendingMove.history) await this.recordOrQueueCardHistory(pendingMove.history);
+            this.showToast('Comentario guardado');
+        } catch (error) {
+            if (this.isNetworkError(error)) {
+                this.showToast('Comentario guardado offline. Se sincronizará al volver la conexión.');
+            } else {
+                this.removePendingMove(cardId, pendingMove.mutationId);
+                if (card.desc === nextDesc) card.desc = previousDesc;
+                this.saveBoardCache();
+                this.renderAfterCardMove();
+                this.showToast('Error: ' + error.message);
+            }
+        } finally {
+            this.inFlightCardMoves.delete(cardId);
+            button.disabled = false;
         }
     }
 
@@ -1767,7 +1858,7 @@ class TrelloShoppingApp {
                 </div>
                 <div class="modal-section">
                     <div class="modal-section-title">Notas</div>
-                    <textarea id="edit-product-desc" class="modal-input modal-textarea" placeholder="Añade notas sobre el producto...">${card.desc || ''}</textarea>
+                    <textarea id="edit-product-desc" class="modal-input modal-textarea" placeholder="Añade notas sobre el producto...">${this.escapeHtml(this.getCardDescription(card))}</textarea>
                 </div>
                 <div class="product-edit-actions">
                     <button class="modal-btn secondary" onclick="app.showProductDetail('${cardId}')">Cancelar</button>
@@ -1901,8 +1992,11 @@ class TrelloShoppingApp {
 
 
     async saveProductEdit(cardId) {
+        const card = this.cards.find(c => c.id === cardId);
+        if (!card) return;
         const nameInput = document.getElementById('edit-product-name').value.trim();
         const descInput = document.getElementById('edit-product-desc').value.trim();
+        const fullDesc = this.composeCardDescription(descInput, this.getActiveComment(card));
         const btn = document.getElementById('save-edit-btn');
         const newLabels = Array.from(this.editSelectedLabels);
 
@@ -1920,18 +2014,15 @@ class TrelloShoppingApp {
                 method: 'PUT',
                 body: JSON.stringify({
                     name: nameInput,
-                    desc: descInput,
+                    desc: fullDesc,
                     idLabels: newLabels
                 })
             });
 
             // Update local card
-            const card = this.cards.find(c => c.id === cardId);
-            if (card) {
-                card.name = nameInput;
-                card.desc = descInput;
-                card.idLabels = newLabels;
-            }
+            card.name = nameInput;
+            card.desc = fullDesc;
+            card.idLabels = newLabels;
             this.saveBoardCache();
 
             this.showToast('Guardado');
@@ -2018,8 +2109,10 @@ class TrelloShoppingApp {
 
         // Optimistic update - update UI immediately
         const previousListId = card.idList;
+        const previousDesc = card.desc;
         const wasActive = previousListId === this.activeList.id;
         card.idList = targetListId;
+        card.desc = this.getCardDescription(card);
 
         if (wasActive) {
             this.addToRecentProducts(cardId);
@@ -2027,7 +2120,7 @@ class TrelloShoppingApp {
         this.applyCardMoveToDom(cardId, targetListId, previousListId);
         this.scheduleRenderAfterCardMove();
         this.saveBoardCacheSoon();
-        this.persistCardMove(card, previousListId, targetListId, historyEntry);
+        this.persistCardMove(card, previousListId, targetListId, historyEntry, previousDesc);
     }
 
     refresh({ background = false } = {}) {
@@ -2204,10 +2297,16 @@ class TrelloShoppingApp {
     }
 
     renderShoppingProduct(card, isInList) {
+        const description = this.getCardDescription(card);
+        const comment = isInList ? this.getActiveComment(card) : '';
         return `
             <div class="shopping-product ${isInList ? 'in-list' : ''}" data-card-id="${card.id}">
                 <div class="product-checkbox ${isInList ? 'checked' : ''}"></div>
-                <div class="product-name">${card.name}</div>
+                <div class="shopping-product-info">
+                    <div class="product-name">${this.escapeHtml(card.name)}</div>
+                    ${description ? `<div class="detail-product-desc">${this.escapeHtml(description)}</div>` : ''}
+                    ${comment ? `<div class="detail-product-desc">${this.escapeHtml(comment)}</div>` : ''}
+                </div>
             </div>
         `;
     }
@@ -2228,7 +2327,9 @@ class TrelloShoppingApp {
 
         // Optimistic update - update UI immediately
         const previousListId = card.idList;
+        const previousDesc = card.desc;
         card.idList = targetList.id;
+        card.desc = this.getCardDescription(card);
 
         if (isCurrentlyActive) {
             this.addToRecentProducts(cardId);
@@ -2236,20 +2337,21 @@ class TrelloShoppingApp {
         this.applyCardMoveToDom(cardId, targetList.id, previousListId);
         this.scheduleRenderAfterCardMove();
         this.saveBoardCacheSoon();
-        this.persistCardMove(card, previousListId, targetList.id, historyEntry);
+        this.persistCardMove(card, previousListId, targetList.id, historyEntry, previousDesc);
 
         const action = isCurrentlyActive ? 'quitado de' : 'añadido a';
         this.showToast(`${card.name} ${action} la lista`);
     }
 
-    persistCardMove(card, previousListId, targetListId, historyEntry) {
-        this.enqueueCardMove(card.id, targetListId, historyEntry);
+    persistCardMove(card, previousListId, targetListId, historyEntry, previousDesc = card.desc) {
+        const desc = card.desc;
+        const pendingMove = this.enqueueCardMove(card.id, targetListId, historyEntry, desc);
 
         window.setTimeout(async () => {
             this.inFlightCardMoves.add(card.id);
             try {
-                await this.moveCard(card.id, targetListId);
-                this.removePendingMove(card.id);
+                await this.moveCard(card.id, targetListId, desc);
+                this.removePendingMove(card.id, pendingMove.mutationId);
                 await this.recordOrQueueCardHistory(historyEntry);
                 this.saveBoardCacheSoon();
             } catch (error) {
@@ -2258,8 +2360,9 @@ class TrelloShoppingApp {
                     return;
                 }
 
-                this.removePendingMove(card.id);
+                this.removePendingMove(card.id, pendingMove.mutationId);
                 card.idList = previousListId;
+                card.desc = previousDesc;
                 this.saveBoardCacheSoon();
                 this.renderAfterCardMove();
                 this.showToast('Error: ' + error.message);
@@ -2269,22 +2372,28 @@ class TrelloShoppingApp {
         }, 0);
     }
 
-    enqueueCardMove(cardId, targetListId, history = null) {
-        const moves = this.loadPendingMoves().filter(move => move.cardId !== cardId);
-        moves.push({
+    enqueueCardMove(cardId, targetListId, history = null, desc) {
+        const existingMoves = this.loadPendingMoves();
+        const previous = existingMoves.find(move => move.cardId === cardId);
+        const moves = existingMoves.filter(move => move.cardId !== cardId);
+        const move = {
             cardId,
             targetListId,
-            history,
+            history: history || previous?.history || null,
+            ...(desc !== undefined ? { desc } : previous?.desc !== undefined ? { desc: previous.desc } : {}),
+            mutationId: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
             createdAt: new Date().toISOString()
-        });
+        };
+        moves.push(move);
         console.log('📦 Cambio offline encolado:', { cardId, targetListId, pending: moves.length });
         this.savePendingMoves(moves);
         this.saveBoardCache();
+        return move;
     }
 
-    removePendingMove(cardId) {
+    removePendingMove(cardId, mutationId) {
         const moves = this.loadPendingMoves();
-        const nextMoves = moves.filter(move => move.cardId !== cardId);
+        const nextMoves = moves.filter(move => move.cardId !== cardId || (mutationId && move.mutationId !== mutationId));
         if (nextMoves.length !== moves.length) {
             this.savePendingMoves(nextMoves);
         }
@@ -2337,7 +2446,7 @@ class TrelloShoppingApp {
             }
 
             try {
-                await this.moveCard(move.cardId, move.targetListId);
+                await this.moveCard(move.cardId, move.targetListId, move.desc);
                 this.serverReachable = true;
                 console.log('✅ Cambio offline sincronizado:', move);
             } catch (error) {
@@ -2373,11 +2482,14 @@ class TrelloShoppingApp {
         }
 
         const currentPendingMoves = this.loadPendingMoves();
-        const currentPendingKeys = new Set(currentPendingMoves.map(move => `${move.cardId}:${move.createdAt}`));
-        const remainingStillPending = remaining.filter(move => currentPendingKeys.has(`${move.cardId}:${move.createdAt}`));
-        this.savePendingMoves(remainingStillPending);
+        const pendingKey = move => `${move.cardId}:${move.mutationId || move.createdAt}`;
+        const currentPendingKeys = new Set(currentPendingMoves.map(pendingKey));
+        const remainingStillPending = remaining.filter(move => currentPendingKeys.has(pendingKey(move)));
+        const originalPendingKeys = new Set(moves.map(pendingKey));
+        const newlyQueuedMoves = currentPendingMoves.filter(move => !originalPendingKeys.has(pendingKey(move)));
+        this.savePendingMoves([...remainingStillPending, ...newlyQueuedMoves]);
 
-        if (remainingStillPending.length === 0) {
+        if (remainingStillPending.length === 0 && newlyQueuedMoves.length === 0) {
             const historyEntries = this.loadPendingHistory();
             const historyRemaining = [];
             for (const entry of historyEntries) {
@@ -2810,8 +2922,10 @@ class TrelloShoppingApp {
         if (!(await this.ensureCurrentUserName())) return;
 
         const previousListId = card.idList;
+        const previousDesc = card.desc;
         const historyEntry = this.buildHistoryEntry(card, 'added');
         card.idList = this.activeList.id;
+        card.desc = this.getCardDescription(card);
         this.saveBoardCache();
 
         this.closeAddModal();
@@ -2819,19 +2933,20 @@ class TrelloShoppingApp {
         requestAnimationFrame(() => this.renderCurrentView());
 
         try {
-            await this.moveCard(cardId, this.activeList.id);
+            await this.moveCard(cardId, this.activeList.id, card.desc);
             this.removePendingMove(cardId);
             await this.recordOrQueueCardHistory(historyEntry);
             this.saveBoardCache();
             this.showToast(`"${card.name}" añadido a la lista`);
         } catch (error) {
             if (this.isNetworkError(error)) {
-                this.enqueueCardMove(cardId, this.activeList.id, historyEntry);
+                this.enqueueCardMove(cardId, this.activeList.id, historyEntry, card.desc);
                 this.showToast(`"${card.name}" añadido offline. Se sincronizara al volver la conexion.`);
                 return;
             }
 
             card.idList = previousListId;
+            card.desc = previousDesc;
             this.saveBoardCache();
             requestAnimationFrame(() => this.renderCurrentView());
             this.showToast('Error: ' + error.message);
@@ -3065,7 +3180,8 @@ class TrelloShoppingApp {
 
             return {
                 name: card.name,
-                desc: card.desc || '',
+                desc: this.getCardDescription(card),
+                ...(this.getActiveComment(card) ? { comment: this.getActiveComment(card) } : {}),
                 stores,
                 locations,
                 images,
@@ -3176,7 +3292,12 @@ class TrelloShoppingApp {
 
                 // Create card in appropriate list
                 const targetList = product.inList ? this.activeList : this.allProductsList;
-                const card = await this.createCard(targetList.id, product.name, labelIds, product.desc || '');
+                const card = await this.createCard(
+                    targetList.id,
+                    product.name,
+                    labelIds,
+                    this.composeCardDescription(product.desc || '', product.inList ? (product.comment || '') : '')
+                );
                 
                 // Add images if available (URLs from export)
                 if (product.images && Array.isArray(product.images) && product.images.length > 0) {
@@ -3230,6 +3351,7 @@ class TrelloShoppingApp {
                     <p style="color: var(--text-secondary); font-size: 14px; margin-bottom: 12px;">
                         Descarga todos tus productos en formato JSON incluyendo:<br>
                         • Nombre y descripción<br>
+                        • Comentario actual de los productos en lista<br>
                         • Tiendas y ubicaciones (con colores)<br>
                         • URLs de imágenes<br>
                         • Configuración de labels disponibles
