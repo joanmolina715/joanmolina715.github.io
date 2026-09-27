@@ -218,7 +218,7 @@ class TrelloShoppingApp {
 
         if (this.currentView === 'detail') {
             document.querySelectorAll(`.detail-product[data-card-id="${cardId}"]`).forEach(productEl => {
-                if (wasActive && !isActive) {
+                if (wasActive && !isActive && !this.searchQuery.trim()) {
                     productEl.remove();
                     return;
                 }
@@ -648,6 +648,25 @@ class TrelloShoppingApp {
             .replace(/[^\p{L}\p{N}\s]/gu, ' ')
             .replace(/\s+/g, ' ')
             .trim();
+    }
+
+    getProductSearchScore(name, query) {
+        const normalizedName = this.normalizeString(name).trim();
+        const normalizedQuery = this.normalizeString(query).trim();
+        if (!normalizedQuery || !normalizedName) return 0;
+        if (normalizedName === normalizedQuery) return 100;
+        if (normalizedName.startsWith(normalizedQuery)) return 90;
+
+        const nameWords = normalizedName.split(/\s+/);
+        if (nameWords.some(word => word.startsWith(normalizedQuery))) return 80;
+        if (normalizedName.includes(normalizedQuery)) return 70;
+
+        const queryWords = normalizedQuery.split(/\s+/);
+        if (queryWords.length > 1 && queryWords.every(queryWord =>
+            nameWords.some(nameWord => nameWord.startsWith(queryWord))
+        )) return 60;
+
+        return 0;
     }
 
     getSimilarProducts(query) {
@@ -1327,96 +1346,93 @@ class TrelloShoppingApp {
             return;
         }
 
-        // Get all cards for this store (both active and available)
-        const allStoreCards = this.cards.filter(c => c.idLabels.includes(storeLabel.id));
-        
-        // Group into active and available (active list is never filtered)
+        // Search and lists include both active and available products for this store.
+        const allStoreCards = this.cards.filter(c =>
+            c.idLabels.includes(storeLabel.id) &&
+            (c.idList === this.activeList.id || c.idList === this.allProductsList.id)
+        );
+
         const activeCards = allStoreCards.filter(c => c.idList === this.activeList.id);
         const urgentCards = activeCards.filter(card => this.getActiveUrgent(card));
         const regularActiveCards = activeCards.filter(card => !this.getActiveUrgent(card));
-        
-        // Filter available cards by search query (prefix match, accent-insensitive)
-        let availableCards = allStoreCards.filter(c => c.idList === this.allProductsList.id);
-        if (this.searchQuery) {
-            const query = this.normalizeString(this.searchQuery.trim());
-            availableCards = availableCards.filter(c => {
-                const name = this.normalizeString(c.name);
-                // Match if any word in the product name starts with the query
-                const words = name.split(/\s+/);
-                return words.some(word => word.startsWith(query));
-            });
-        }
+        const availableCards = allStoreCards.filter(c => c.idList === this.allProductsList.id);
+        const query = this.searchQuery.trim();
 
-        if (activeCards.length === 0 && availableCards.length === 0) {
-            container.innerHTML = `
-                <div class="empty-state">
-                    <div class="icon">🔍</div>
-                    <p>${this.searchQuery ? 'No se encontraron productos' : 'No hay productos para esta tienda'}</p>
-                </div>
-            `;
-            return;
-        }
-
-        let html = '';
-
-        if (urgentCards.length > 0) {
-            html += `
-                <div class="products-section urgent-products-section">
-                    <div class="products-section-title">🚨 Urgentes (${urgentCards.length})</div>
-                    ${urgentCards.map(card => this.renderDetailProduct(card, true)).join('')}
-                </div>
-            `;
-        }
-
-        if (regularActiveCards.length > 0 || activeCards.length === 0) {
-            html += `
-                <div class="products-section">
-                    <div class="products-section-title">En lista (${regularActiveCards.length})</div>
-                    ${regularActiveCards.map(card => this.renderDetailProduct(card, true)).join('')}
-                </div>
-            `;
-        }
-
-        // Search input between "En lista" and available products
-        html += `
+        let html = `
             <div class="search-container-inline">
-                <input type="text" class="search-input" id="product-search-inline" placeholder="Buscar producto..." value="${this.searchQuery || ''}">
+                <input type="text" class="search-input" id="product-search-inline" placeholder="Buscar producto..." value="${this.escapeHtml(this.searchQuery)}">
                 <button type="button" class="search-clear-btn ${this.searchQuery ? 'visible' : ''}" id="search-clear-btn" aria-label="Limpiar búsqueda"></button>
             </div>
         `;
 
-        // Available products section - ordered as STACK (most recently removed first)
-        if (availableCards.length > 0) {
-            // Sort available cards: most recently added to recentProducts appears first
-            const sortedAvailableCards = [...availableCards].sort((a, b) => {
-                const aIndex = this.recentProducts.findIndex(item => item.cardId === a.id);
-                const bIndex = this.recentProducts.findIndex(item => item.cardId === b.id);
+        if (query) {
+            const results = allStoreCards
+                .map(card => ({ card, score: this.getProductSearchScore(card.name, query) }))
+                .filter(result => result.score > 0)
+                .sort((a, b) =>
+                    b.score - a.score ||
+                    Number(a.card.idList === this.activeList.id) - Number(b.card.idList === this.activeList.id) ||
+                    a.card.name.localeCompare(b.card.name, 'es')
+                );
 
-                // If both are in recent, sort by index (lower index = more recent)
-                if (aIndex !== -1 && bIndex !== -1) {
-                    return aIndex - bIndex;
-                }
-                // If only a is in recent, it goes first
-                if (aIndex !== -1) return -1;
-                // If only b is in recent, it goes first
-                if (bIndex !== -1) return 1;
-                // Neither in recent, maintain original order
-                return 0;
-            });
-
-            html += `
-                <div class="products-section products-section-available">
-                    <div class="products-section-title">Disponibles (${sortedAvailableCards.length})</div>
-                    ${sortedAvailableCards.map(card => this.renderDetailProduct(card, false)).join('')}
+            html += results.length > 0 ? `
+                <div class="products-section">
+                    <div class="products-section-title">Resultados (${results.length})</div>
+                    ${results.map(({ card }) => this.renderDetailProduct(card, card.idList === this.activeList.id)).join('')}
                 </div>
-            `;
+            ` : '<p class="search-empty-message">No se encontraron productos</p>';
         } else {
-            // Empty section to maintain layout height
-            html += `
-                <div class="products-section products-section-available">
-                    ${this.searchQuery ? '<p style="color: var(--text-muted); padding: 40px 20px;">No se encontraron productos</p>' : ''}
-                </div>
-            `;
+            if (urgentCards.length > 0) {
+                html += `
+                    <div class="products-section urgent-products-section">
+                        <div class="products-section-title">🚨 Urgentes (${urgentCards.length})</div>
+                        ${urgentCards.map(card => this.renderDetailProduct(card, true)).join('')}
+                    </div>
+                `;
+            }
+
+            if (regularActiveCards.length > 0 || activeCards.length === 0) {
+                html += `
+                    <div class="products-section">
+                        <div class="products-section-title">En lista (${regularActiveCards.length})</div>
+                        ${regularActiveCards.map(card => this.renderDetailProduct(card, true)).join('')}
+                    </div>
+                `;
+            }
+
+            // Available products section - ordered as STACK (most recently removed first)
+            if (availableCards.length > 0) {
+                // Sort available cards: most recently added to recentProducts appears first
+                const sortedAvailableCards = [...availableCards].sort((a, b) => {
+                    const aIndex = this.recentProducts.findIndex(item => item.cardId === a.id);
+                    const bIndex = this.recentProducts.findIndex(item => item.cardId === b.id);
+
+                    // If both are in recent, sort by index (lower index = more recent)
+                    if (aIndex !== -1 && bIndex !== -1) {
+                        return aIndex - bIndex;
+                    }
+                    // If only a is in recent, it goes first
+                    if (aIndex !== -1) return -1;
+                    // If only b is in recent, it goes first
+                    if (bIndex !== -1) return 1;
+                    // Neither in recent, maintain original order
+                    return 0;
+                });
+
+                html += `
+                    <div class="products-section products-section-available">
+                        <div class="products-section-title">Disponibles (${sortedAvailableCards.length})</div>
+                        ${sortedAvailableCards.map(card => this.renderDetailProduct(card, false)).join('')}
+                    </div>
+                `;
+            } else {
+                // Empty section to maintain layout height
+                html += `
+                    <div class="products-section products-section-available">
+                        ${allStoreCards.length === 0 ? '<p class="search-empty-message">No hay productos para esta tienda</p>' : ''}
+                    </div>
+                `;
+            }
         }
 
         container.innerHTML = html;
@@ -1450,6 +1466,7 @@ class TrelloShoppingApp {
             const clearSearch = (e) => {
                 e.preventDefault();
                 e.stopPropagation();
+                clearTimeout(this.searchTimeout);
                 this.searchQuery = '';
                 this.renderStoreDetail(this.currentStore);
                 const newInput = document.getElementById('product-search-inline');
