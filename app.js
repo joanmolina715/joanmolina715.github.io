@@ -88,7 +88,6 @@ class TrelloShoppingApp {
         this.selectedStore = null; // For shopping mode
         this.searchQuery = '';
         this.searchTimeout = null; // For debouncing search
-        this.searchCentered = false;
 
         // Cache for image blob URLs
         this.imageCache = new Map();
@@ -815,20 +814,7 @@ class TrelloShoppingApp {
 
         // Add product modal
         document.getElementById('add-product-detail-btn')?.addEventListener('click', () => this.openAddModal());
-        document.getElementById('search-product-detail-btn')?.addEventListener('click', () => this.centerSearchInput());
-        document.addEventListener('click', (e) => {
-            if (this.searchCentered && !e.target.closest('.search-container-inline, #search-product-detail-btn')) {
-                this.closeCenteredSearch();
-            }
-        });
-        document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape' && this.searchCentered) {
-                this.closeCenteredSearch();
-                document.getElementById('product-search-inline')?.blur();
-            }
-        });
-        window.visualViewport?.addEventListener('resize', () => this.positionCenteredSearch());
-        window.visualViewport?.addEventListener('scroll', () => this.positionCenteredSearch());
+        document.getElementById('search-product-detail-btn')?.addEventListener('click', () => this.focusSearchInput());
         document.getElementById('modal-close')?.addEventListener('click', () => this.closeAddModal());
         document.getElementById('add-modal')?.addEventListener('click', (e) => {
             if (e.target.id === 'add-modal') this.closeAddModal();
@@ -1256,7 +1242,6 @@ class TrelloShoppingApp {
     showStoreCards() {
         this.currentView = 'stores';
         this.searchQuery = '';
-        this.searchCentered = false;
         
         document.getElementById('store-cards-view').classList.remove('hidden');
         document.getElementById('store-detail-view').classList.add('hidden');
@@ -1272,7 +1257,6 @@ class TrelloShoppingApp {
         this.currentView = 'detail';
         this.currentStore = storeLabel;
         this.searchQuery = '';
-        this.searchCentered = false;
 
         document.getElementById('store-cards-view').classList.add('hidden');
         document.getElementById('shopping-mode-view').classList.add('hidden');
@@ -1283,31 +1267,12 @@ class TrelloShoppingApp {
         this.renderStoreDetail(storeLabel);
     }
 
-    centerSearchInput() {
+    focusSearchInput() {
         const searchInput = document.getElementById('product-search-inline');
         if (!searchInput) return;
 
-        this.searchCentered = true;
-        searchInput.parentElement.classList.add('search-centered');
-        this.positionCenteredSearch();
         searchInput.focus({ preventScroll: true });
-    }
-
-    positionCenteredSearch() {
-        if (!this.searchCentered) return;
-        const searchContainer = document.querySelector('#store-detail-view .search-container-inline');
-        if (!searchContainer) return;
-
-        const viewport = window.visualViewport;
-        const centerY = viewport ? viewport.offsetTop + viewport.height / 2 : window.innerHeight / 2;
-        searchContainer.style.top = `${centerY}px`;
-    }
-
-    closeCenteredSearch() {
-        this.searchCentered = false;
-        const searchContainer = document.querySelector('#store-detail-view .search-container-inline');
-        searchContainer?.classList.remove('search-centered');
-        searchContainer?.style.removeProperty('top');
+        window.scrollTo({ top: 0, behavior: 'smooth' });
     }
 
     renderStoreCards() {
@@ -1403,7 +1368,7 @@ class TrelloShoppingApp {
         const query = this.searchQuery.trim();
 
         let html = `
-            <div class="search-container-inline ${this.searchCentered ? 'search-centered' : ''}">
+            <div class="search-container-inline">
                 <input type="text" class="search-input" id="product-search-inline" placeholder="Buscar producto..." value="${this.escapeHtml(this.searchQuery)}">
                 <button type="button" class="search-clear-btn ${this.searchQuery ? 'visible' : ''}" id="search-clear-btn" aria-label="Limpiar búsqueda"></button>
             </div>
@@ -1480,7 +1445,6 @@ class TrelloShoppingApp {
         }
 
         container.innerHTML = html;
-        this.positionCenteredSearch();
 
         // Bind search input event
         const searchInput = document.getElementById('product-search-inline');
