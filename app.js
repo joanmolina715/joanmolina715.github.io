@@ -601,24 +601,33 @@ class TrelloShoppingApp {
             .replace(/'/g, '&#039;');
     }
 
-    // Active-list settings live in marked suffixes of Trello's card description.
+    // Product flags and active-list settings live in marked suffixes of Trello's card description.
     // Keep them separate from the product's permanent notes everywhere in the UI.
     splitCardDescription(desc = '') {
-        const value = String(desc || '');
-        const urgentMatch = value.match(/(?:\n\n)?<!-- shopping-list-active-urgent:true -->$/);
-        const withoutUrgency = urgentMatch ? value.slice(0, urgentMatch.index) : value;
-        const commentMatch = withoutUrgency.match(/(?:\n\n)?<!-- shopping-list-active-comment:([^\n]*?) -->$/);
-        if (!commentMatch) return { description: withoutUrgency, comment: '', urgent: !!urgentMatch };
+        let description = String(desc || '');
+        let comment = '';
+        let urgent = false;
+        let cold = false;
 
-        try {
-            return {
-                description: withoutUrgency.slice(0, commentMatch.index),
-                comment: decodeURIComponent(commentMatch[1]),
-                urgent: !!urgentMatch
-            };
-        } catch (error) {
-            return { description: withoutUrgency, comment: '', urgent: !!urgentMatch };
+        while (true) {
+            const marker = description.match(/(?:\n\n)?<!-- shopping-list-(active-comment|active-urgent|cold):([^\n]*?) -->$/);
+            if (!marker) break;
+
+            description = description.slice(0, marker.index);
+            if (marker[1] === 'active-comment') {
+                try {
+                    comment = decodeURIComponent(marker[2]);
+                } catch (error) {
+                    comment = '';
+                }
+            } else if (marker[1] === 'active-urgent') {
+                urgent = marker[2] === 'true';
+            } else if (marker[1] === 'cold') {
+                cold = marker[2] === 'true';
+            }
         }
+
+        return { description, comment, urgent, cold };
     }
 
     getCardDescription(card) {
@@ -636,11 +645,20 @@ class TrelloShoppingApp {
             && this.splitCardDescription(card.desc).urgent;
     }
 
-    composeCardDescription(description, comment, urgent = false) {
+    getCold(card) {
+        return this.splitCardDescription(card.desc).cold;
+    }
+
+    composeCardDescription(description, comment, urgent = false, cold = false) {
         let value = description;
+        if (cold) value += '\n\n<!-- shopping-list-cold:true -->';
         if (comment) value += `\n\n<!-- shopping-list-active-comment:${encodeURIComponent(comment)} -->`;
         if (urgent) value += '\n\n<!-- shopping-list-active-urgent:true -->';
         return value;
+    }
+
+    clearActiveListSettings(card) {
+        return this.composeCardDescription(this.getCardDescription(card), '', false, this.getCold(card));
     }
 
     normalizeProductName(str) {
@@ -1353,6 +1371,19 @@ class TrelloShoppingApp {
         });
     }
 
+    groupActiveProducts(cards) {
+        const groups = { urgentColdCards: [], urgentCards: [], regularCards: [], coldCards: [] };
+        cards.forEach(card => {
+            const urgent = this.getActiveUrgent(card);
+            const cold = this.getCold(card);
+            if (urgent && cold) groups.urgentColdCards.push(card);
+            else if (urgent) groups.urgentCards.push(card);
+            else if (cold) groups.coldCards.push(card);
+            else groups.regularCards.push(card);
+        });
+        return groups;
+    }
+
     renderStoreDetail(storeLabel) {
         const container = document.getElementById('products-container');
         
@@ -1372,8 +1403,7 @@ class TrelloShoppingApp {
         );
 
         const activeCards = allStoreCards.filter(c => c.idList === this.activeList.id);
-        const urgentCards = activeCards.filter(card => this.getActiveUrgent(card));
-        const regularActiveCards = activeCards.filter(card => !this.getActiveUrgent(card));
+        const { urgentColdCards, urgentCards, regularCards, coldCards } = this.groupActiveProducts(activeCards);
         const availableCards = allStoreCards.filter(c => c.idList === this.allProductsList.id);
         const query = this.searchQuery.trim();
 
@@ -1396,6 +1426,15 @@ class TrelloShoppingApp {
                 </div>
             ` : '<p class="search-empty-message">No se encontraron productos</p>';
         } else {
+            if (urgentColdCards.length > 0) {
+                html += `
+                    <div class="products-section urgent-products-section">
+                        <div class="products-section-title">🚨❄️ Urgentes fríos (${urgentColdCards.length})</div>
+                        ${urgentColdCards.map(card => this.renderDetailProduct(card, true)).join('')}
+                    </div>
+                `;
+            }
+
             if (urgentCards.length > 0) {
                 html += `
                     <div class="products-section urgent-products-section">
@@ -1405,11 +1444,20 @@ class TrelloShoppingApp {
                 `;
             }
 
-            if (regularActiveCards.length > 0 || activeCards.length === 0) {
+            if (regularCards.length > 0 || activeCards.length === 0) {
                 html += `
                     <div class="products-section">
-                        <div class="products-section-title">En lista (${regularActiveCards.length})</div>
-                        ${regularActiveCards.map(card => this.renderDetailProduct(card, true)).join('')}
+                        <div class="products-section-title">En lista (${regularCards.length})</div>
+                        ${regularCards.map(card => this.renderDetailProduct(card, true)).join('')}
+                    </div>
+                `;
+            }
+
+            if (coldCards.length > 0) {
+                html += `
+                    <div class="products-section cold-products-section">
+                        <div class="products-section-title">❄️ Fríos (${coldCards.length})</div>
+                        ${coldCards.map(card => this.renderDetailProduct(card, true)).join('')}
                     </div>
                 `;
             }
@@ -1755,6 +1803,16 @@ class TrelloShoppingApp {
                         <span class="product-detail-label">📝 Notas</span>
                         ${this.getCardDescription(card) ? `<p class="product-detail-desc">${this.escapeHtml(this.getCardDescription(card))}</p>` : '<p class="product-detail-desc empty">Sin notas</p>'}
                     </div>
+                    <div class="product-detail-section product-urgent-setting">
+                        <div>
+                            <span class="product-detail-label">❄️ Frío</span>
+                            <p class="product-urgent-hint">Nevera o congelador; comprar al final</p>
+                        </div>
+                        <label class="ios-switch">
+                            <input type="checkbox" id="product-cold" role="switch" aria-label="Marcar producto como frío" ${this.getCold(card) ? 'checked' : ''}>
+                            <span class="ios-switch-track" aria-hidden="true"></span>
+                        </label>
+                    </div>
                     ${card.idList === this.activeList?.id ? `
                         <div class="product-detail-section product-urgent-setting">
                             <div>
@@ -1797,6 +1855,7 @@ class TrelloShoppingApp {
                 if (event.key === 'Enter') this.saveActiveComment(cardId);
             });
             document.getElementById('active-product-urgent')?.addEventListener('change', () => this.saveActiveUrgency(cardId));
+            document.getElementById('product-cold')?.addEventListener('change', () => this.saveColdFlag(cardId));
 
             // Load images with OAuth after HTML is rendered
             this.loadDetailImages(images);
@@ -1809,28 +1868,44 @@ class TrelloShoppingApp {
         const card = this.cards.find(c => c.id === cardId);
         const input = document.getElementById('active-product-comment');
         if (!card || !input) return;
-        await this.saveActiveListSettings(cardId, input.value.trim(), this.getActiveUrgent(card), 'Comentario guardado');
+        await this.saveProductSettings(cardId, { comment: input.value.trim() }, 'Comentario guardado', true);
     }
 
     async saveActiveUrgency(cardId) {
         const card = this.cards.find(c => c.id === cardId);
         const toggle = document.getElementById('active-product-urgent');
         if (!card || !toggle) return;
-        await this.saveActiveListSettings(cardId, this.getActiveComment(card), toggle.checked, 'Urgencia actualizada');
+        await this.saveProductSettings(cardId, { urgent: toggle.checked }, 'Urgencia actualizada', true);
     }
 
-    async saveActiveListSettings(cardId, comment, urgent, successMessage) {
+    async saveColdFlag(cardId) {
+        const toggle = document.getElementById('product-cold');
+        if (!toggle) return;
+        await this.saveProductSettings(cardId, { cold: toggle.checked }, 'Producto frío actualizado');
+    }
+
+    async saveProductSettings(cardId, changes, successMessage, activeOnly = false) {
         const card = this.cards.find(c => c.id === cardId);
         const button = document.getElementById('save-active-comment');
-        const toggle = document.getElementById('active-product-urgent');
-        if (!card || !button || !toggle || card.idList !== this.activeList?.id || button.disabled || toggle.disabled) return;
+        const urgentToggle = document.getElementById('active-product-urgent');
+        const coldToggle = document.getElementById('product-cold');
+        if (!card || (activeOnly && card.idList !== this.activeList?.id)) return;
+
+        const controls = [button, urgentToggle, coldToggle].filter(Boolean);
+        if (this.inFlightCardMoves.has(cardId) || controls.some(control => control.disabled)) return;
 
         const previousDesc = card.desc || '';
-        const nextDesc = this.composeCardDescription(this.getCardDescription(card), comment, urgent);
+        const current = this.splitCardDescription(previousDesc);
+        const isActive = card.idList === this.activeList?.id;
+        const nextDesc = this.composeCardDescription(
+            current.description,
+            isActive ? (changes.comment ?? current.comment) : '',
+            isActive ? (changes.urgent ?? current.urgent) : false,
+            changes.cold ?? current.cold
+        );
         if (nextDesc === previousDesc) return;
 
-        button.disabled = true;
-        toggle.disabled = true;
+        controls.forEach(control => { control.disabled = true; });
         card.desc = nextDesc;
         const pendingMove = this.enqueueCardMove(cardId, card.idList, null, nextDesc);
         this.saveBoardCache();
@@ -1849,15 +1924,17 @@ class TrelloShoppingApp {
             } else {
                 this.removePendingMove(cardId, pendingMove.mutationId);
                 if (card.desc === nextDesc) card.desc = previousDesc;
-                toggle.checked = this.getActiveUrgent(card);
+                if (urgentToggle) urgentToggle.checked = this.getActiveUrgent(card);
+                if (coldToggle) coldToggle.checked = this.getCold(card);
+                const commentInput = document.getElementById('active-product-comment');
+                if (commentInput) commentInput.value = this.getActiveComment(card);
                 this.saveBoardCache();
                 this.renderAfterCardMove();
                 this.showToast('Error: ' + error.message);
             }
         } finally {
             this.inFlightCardMoves.delete(cardId);
-            button.disabled = false;
-            toggle.disabled = false;
+            controls.forEach(control => { control.disabled = false; });
         }
     }
 
@@ -2075,7 +2152,7 @@ class TrelloShoppingApp {
         if (!card) return;
         const nameInput = document.getElementById('edit-product-name').value.trim();
         const descInput = document.getElementById('edit-product-desc').value.trim();
-        const fullDesc = this.composeCardDescription(descInput, this.getActiveComment(card), this.getActiveUrgent(card));
+        const fullDesc = this.composeCardDescription(descInput, this.getActiveComment(card), this.getActiveUrgent(card), this.getCold(card));
         const btn = document.getElementById('save-edit-btn');
         const newLabels = Array.from(this.editSelectedLabels);
 
@@ -2191,7 +2268,7 @@ class TrelloShoppingApp {
         const previousDesc = card.desc;
         const wasActive = previousListId === this.activeList.id;
         card.idList = targetListId;
-        card.desc = this.getCardDescription(card);
+        card.desc = this.clearActiveListSettings(card);
 
         if (wasActive) {
             this.addToRecentProducts(cardId);
@@ -2301,8 +2378,7 @@ class TrelloShoppingApp {
         // Get all products for this store
         const storeProducts = this.cards.filter(c => c.idLabels.includes(this.selectedStore.id));
         const activeStoreProducts = storeProducts.filter(c => c.idList === this.activeList?.id);
-        const urgentStoreProducts = activeStoreProducts.filter(card => this.getActiveUrgent(card));
-        const regularStoreProducts = activeStoreProducts.filter(card => !this.getActiveUrgent(card));
+        const { urgentColdCards, urgentCards, regularCards, coldCards } = this.groupActiveProducts(activeStoreProducts);
 
         // Get location labels (excluding store names), sorted alphabetically
         const storeNames = this.getStoreNames();
@@ -2324,30 +2400,52 @@ class TrelloShoppingApp {
 
         `;
 
-        if (urgentStoreProducts.length > 0) {
+        if (urgentColdCards.length > 0) {
             html += `
                 <div class="shopping-active-list urgent-products-section shopping-urgent-section">
-                    <h3>🚨 Urgentes (${urgentStoreProducts.length})</h3>
+                    <h3>🚨❄️ Urgentes fríos (${urgentColdCards.length})</h3>
                     <div class="shopping-products">
-                        ${urgentStoreProducts.map(card => this.renderShoppingProduct(card, true)).join('')}
+                        ${urgentColdCards.map(card => this.renderShoppingProduct(card, true)).join('')}
                     </div>
                 </div>
             `;
         }
 
-        if (regularStoreProducts.length > 0 || activeStoreProducts.length === 0) {
+        if (urgentCards.length > 0) {
+            html += `
+                <div class="shopping-active-list urgent-products-section shopping-urgent-section">
+                    <h3>🚨 Urgentes (${urgentCards.length})</h3>
+                    <div class="shopping-products">
+                        ${urgentCards.map(card => this.renderShoppingProduct(card, true)).join('')}
+                    </div>
+                </div>
+            `;
+        }
+
+        if (regularCards.length > 0 || activeStoreProducts.length === 0) {
             html += `
                     <div class="shopping-active-list">
-                        <h3>📋 En tu lista (${regularStoreProducts.length})</h3>
+                        <h3>📋 En tu lista (${regularCards.length})</h3>
             `;
 
-            if (regularStoreProducts.length > 0) {
-                html += `<div class="shopping-products">${regularStoreProducts.map(card => this.renderShoppingProduct(card, true)).join('')}</div>`;
+            if (regularCards.length > 0) {
+                html += `<div class="shopping-products">${regularCards.map(card => this.renderShoppingProduct(card, true)).join('')}</div>`;
             } else {
                 html += '<p class="empty-message">No hay productos de esta tienda en tu lista</p>';
             }
 
             html += '</div>';
+        }
+
+        if (coldCards.length > 0) {
+            html += `
+                <div class="shopping-active-list cold-products-section shopping-cold-section">
+                    <h3>❄️ Fríos (${coldCards.length})</h3>
+                    <div class="shopping-products">
+                        ${coldCards.map(card => this.renderShoppingProduct(card, true)).join('')}
+                    </div>
+                </div>
+            `;
         }
 
         // Group all store products by location
@@ -2422,7 +2520,7 @@ class TrelloShoppingApp {
         const previousListId = card.idList;
         const previousDesc = card.desc;
         card.idList = targetList.id;
-        card.desc = this.getCardDescription(card);
+        card.desc = this.clearActiveListSettings(card);
 
         if (isCurrentlyActive) {
             this.addToRecentProducts(cardId);
@@ -2929,6 +3027,8 @@ class TrelloShoppingApp {
         this.selectedLabels.clear();
         document.getElementById('product-name').value = '';
         document.getElementById('product-description').value = '';
+        const coldToggle = document.getElementById('new-product-cold');
+        if (coldToggle) coldToggle.checked = false;
         this.renderDuplicateSuggestions('');
         document.getElementById('add-modal').classList.remove('hidden');
         document.body.style.overflow = 'hidden';
@@ -3018,7 +3118,7 @@ class TrelloShoppingApp {
         const previousDesc = card.desc;
         const historyEntry = this.buildHistoryEntry(card, 'added');
         card.idList = this.activeList.id;
-        card.desc = this.getCardDescription(card);
+        card.desc = this.clearActiveListSettings(card);
         this.saveBoardCache();
 
         this.closeAddModal();
@@ -3139,6 +3239,7 @@ class TrelloShoppingApp {
     async createProduct() {
         const name = document.getElementById('product-name').value.trim();
         const descriptionInput = document.getElementById('product-description').value.trim();
+        const cold = document.getElementById('new-product-cold')?.checked || false;
         const imageInput = document.getElementById('product-image');
         const imageFile = imageInput.files[0];
         const btn = document.getElementById('create-product-btn');
@@ -3168,7 +3269,7 @@ class TrelloShoppingApp {
                 this.allProductsList.id,
                 name,
                 Array.from(this.selectedLabels),
-                descriptionInput
+                this.composeCardDescription(descriptionInput, '', false, cold)
             );
 
             // If image selected, upload it
@@ -3212,6 +3313,8 @@ class TrelloShoppingApp {
         this.selectedLabels.clear();
         document.getElementById('product-name').value = '';
         document.getElementById('product-description').value = '';
+        const coldToggle = document.getElementById('new-product-cold');
+        if (coldToggle) coldToggle.checked = false;
         this.renderDuplicateSuggestions('');
 
         // Reset image
@@ -3276,6 +3379,7 @@ class TrelloShoppingApp {
                 desc: this.getCardDescription(card),
                 ...(this.getActiveComment(card) ? { comment: this.getActiveComment(card) } : {}),
                 ...(this.getActiveUrgent(card) ? { urgent: true } : {}),
+                cold: this.getCold(card),
                 stores,
                 locations,
                 images,
@@ -3284,7 +3388,7 @@ class TrelloShoppingApp {
         });
 
         const exportData = {
-            version: 2,
+            version: 3,
             exported: new Date().toISOString(),
             products,
             // Export available stores and locations for reference
@@ -3393,7 +3497,8 @@ class TrelloShoppingApp {
                     this.composeCardDescription(
                         product.desc || '',
                         product.inList ? (product.comment || '') : '',
-                        !!(product.inList && product.urgent)
+                        !!(product.inList && product.urgent),
+                        !!product.cold
                     )
                 );
                 

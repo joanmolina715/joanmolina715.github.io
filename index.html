@@ -1466,6 +1466,19 @@
             color: #ff6b6d;
         }
 
+        .cold-products-section {
+            padding: 12px 14px;
+            border: 2px solid #38bdf8;
+            border-radius: var(--radius-lg);
+            background: rgb(56 189 248 / 0.09);
+            box-shadow: 0 0 0 1px rgb(56 189 248 / 0.2), 0 0 18px rgb(56 189 248 / 0.18);
+        }
+
+        .cold-products-section .products-section-title,
+        .shopping-active-list.shopping-cold-section h3 {
+            color: #7dd3fc;
+        }
+
         /* Shopping Mode */
         .shopping-view {
             min-height: 100dvh;
@@ -1515,7 +1528,8 @@
             padding: 20px;
         }
 
-        .shopping-urgent-section {
+        .shopping-urgent-section,
+        .shopping-cold-section {
             margin: 18px 20px 0;
             padding: 16px;
         }
@@ -2252,11 +2266,22 @@
                     <textarea id="product-description" class="input" rows="3" placeholder="Ej: Marca preferida, cantidad..."></textarea>
                 </div>
 
+                <div class="modal-section product-urgent-setting">
+                    <div>
+                        <span class="product-detail-label">❄️ Frío</span>
+                        <p class="product-urgent-hint">Nevera o congelador; comprar al final</p>
+                    </div>
+                    <label class="ios-switch">
+                        <input type="checkbox" id="new-product-cold" role="switch" aria-label="Marcar producto como frío">
+                        <span class="ios-switch-track" aria-hidden="true"></span>
+                    </label>
+                </div>
+
                 <button class="btn btn-primary" id="create-product-btn">Crear Producto</button>
             </div>
         </div>
     </div>
 
-    <script src="app.js?v=10"></script>
+    <script src="app.js?v=11"></script>
 </body>
 </html>
