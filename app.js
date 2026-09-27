@@ -815,6 +815,29 @@ class TrelloShoppingApp {
         // Add product modal
         document.getElementById('add-product-detail-btn')?.addEventListener('click', () => this.openAddModal());
         document.getElementById('search-product-detail-btn')?.addEventListener('click', () => this.focusSearchInput());
+        const searchInput = document.getElementById('product-search-inline');
+        const clearSearchBtn = document.getElementById('search-clear-btn');
+        searchInput?.addEventListener('input', (e) => {
+            clearTimeout(this.searchTimeout);
+            this.searchQuery = e.target.value;
+            clearSearchBtn?.classList.toggle('visible', this.searchQuery.length > 0);
+            this.searchTimeout = setTimeout(() => {
+                if (this.currentView === 'detail' && this.currentStore) {
+                    this.renderStoreDetail(this.currentStore);
+                }
+            }, 300);
+        });
+        const clearSearch = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            clearTimeout(this.searchTimeout);
+            this.searchQuery = '';
+            searchInput.value = '';
+            clearSearchBtn.classList.remove('visible');
+            this.renderStoreDetail(this.currentStore);
+            searchInput.focus();
+        };
+        clearSearchBtn?.addEventListener('click', clearSearch);
         document.getElementById('modal-close')?.addEventListener('click', () => this.closeAddModal());
         document.getElementById('add-modal')?.addEventListener('click', (e) => {
             if (e.target.id === 'add-modal') this.closeAddModal();
@@ -1242,6 +1265,7 @@ class TrelloShoppingApp {
     showStoreCards() {
         this.currentView = 'stores';
         this.searchQuery = '';
+        clearTimeout(this.searchTimeout);
         
         document.getElementById('store-cards-view').classList.remove('hidden');
         document.getElementById('store-detail-view').classList.add('hidden');
@@ -1257,6 +1281,9 @@ class TrelloShoppingApp {
         this.currentView = 'detail';
         this.currentStore = storeLabel;
         this.searchQuery = '';
+        clearTimeout(this.searchTimeout);
+        document.getElementById('product-search-inline').value = '';
+        document.getElementById('search-clear-btn').classList.remove('visible');
 
         document.getElementById('store-cards-view').classList.add('hidden');
         document.getElementById('shopping-mode-view').classList.add('hidden');
@@ -1271,8 +1298,8 @@ class TrelloShoppingApp {
         const searchInput = document.getElementById('product-search-inline');
         if (!searchInput) return;
 
+        window.scrollTo(0, 0);
         searchInput.focus({ preventScroll: true });
-        window.scrollTo({ top: 0, behavior: 'smooth' });
     }
 
     renderStoreCards() {
@@ -1367,12 +1394,7 @@ class TrelloShoppingApp {
         const availableCards = allStoreCards.filter(c => c.idList === this.allProductsList.id);
         const query = this.searchQuery.trim();
 
-        let html = `
-            <div class="search-container-inline">
-                <input type="text" class="search-input" id="product-search-inline" placeholder="Buscar producto..." value="${this.escapeHtml(this.searchQuery)}">
-                <button type="button" class="search-clear-btn ${this.searchQuery ? 'visible' : ''}" id="search-clear-btn" aria-label="Limpiar búsqueda"></button>
-            </div>
-        `;
+        let html = '';
 
         if (query) {
             const results = allStoreCards
@@ -1445,47 +1467,6 @@ class TrelloShoppingApp {
         }
 
         container.innerHTML = html;
-
-        // Bind search input event
-        const searchInput = document.getElementById('product-search-inline');
-        const clearBtn = document.getElementById('search-clear-btn');
-        if (searchInput) {
-            searchInput.addEventListener('input', (e) => {
-                const value = e.target.value;
-                clearTimeout(this.searchTimeout);
-                this.searchQuery = value;
-                // Toggle clear button visibility
-                if (clearBtn) {
-                    clearBtn.classList.toggle('visible', value.length > 0);
-                }
-                this.searchTimeout = setTimeout(() => {
-                    this.renderStoreDetail(this.currentStore);
-                    // Re-focus and set cursor position
-                    const newInput = document.getElementById('product-search-inline');
-                    if (newInput) {
-                        newInput.focus();
-                        newInput.setSelectionRange(value.length, value.length);
-                    }
-                }, 300);
-            });
-        }
-
-        // Bind clear button event (touchend for mobile, click for desktop)
-        if (clearBtn) {
-            const clearSearch = (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                clearTimeout(this.searchTimeout);
-                this.searchQuery = '';
-                this.renderStoreDetail(this.currentStore);
-                const newInput = document.getElementById('product-search-inline');
-                if (newInput) {
-                    newInput.focus();
-                }
-            };
-            clearBtn.addEventListener('touchend', clearSearch);
-            clearBtn.addEventListener('click', clearSearch);
-        }
 
         // Add click handlers for products (check if click is on info button)
         container.querySelectorAll('.detail-product').forEach(productDiv => {
