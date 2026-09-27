@@ -489,12 +489,10 @@ class TrelloShoppingApp {
 
             const close = value => {
                 modal.remove();
-                document.body.style.overflow = '';
                 resolve(value);
             };
 
             document.body.appendChild(modal);
-            document.body.style.overflow = 'hidden';
 
             const input = document.getElementById('user-name-input');
             const save = () => {
@@ -742,6 +740,7 @@ class TrelloShoppingApp {
         this.checkUrlParamsLogin();
 
         this.bindEvents();
+        this.setupModalScrollLock();
         this.loadTheme();
         this.setupConnectivityHandlers();
         this.registerServiceWorker();
@@ -846,17 +845,41 @@ class TrelloShoppingApp {
         document.addEventListener('touchstart', () => {}, passiveOpts);
         document.addEventListener('touchmove', () => {}, passiveOpts);
 
-        // Keyboard dismissal - tap outside input to close keyboard
-        document.addEventListener('touchstart', (e) => {
+        // Dismiss the keyboard after a tap, without interrupting the start of a swipe.
+        document.addEventListener('click', (e) => {
             const activeElement = document.activeElement;
             if (activeElement && (activeElement.tagName === 'INPUT' || activeElement.tagName === 'TEXTAREA')) {
-                // If tap is not on an input/textarea, blur to dismiss keyboard
-                if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') {
+                if (!e.target.closest('input, textarea, .search-container-inline')) {
                     activeElement.blur();
                 }
             }
         });
 
+    }
+
+    setupModalScrollLock() {
+        // Dynamic dialogs are attached directly to body. The other two dialogs
+        // stay in the DOM and are shown or hidden by changing their class.
+        const observer = new MutationObserver(() => this.syncBodyScrollLock());
+        observer.observe(document.body, { childList: true });
+        for (const id of ['add-modal', 'product-detail-modal']) {
+            observer.observe(document.getElementById(id), {
+                attributes: true,
+                attributeFilter: ['class']
+            });
+        }
+        window.addEventListener('pageshow', () => this.syncBodyScrollLock());
+        this.syncBodyScrollLock();
+    }
+
+    syncBodyScrollLock() {
+        const hasOpenModal = !!document.querySelector(
+            '.modal-overlay:not(.hidden), .product-detail-modal:not(.hidden)'
+        );
+        const overflow = hasOpenModal ? 'hidden' : '';
+        if (document.body.style.overflow !== overflow) {
+            document.body.style.overflow = overflow;
+        }
     }
 
     // Modal state
@@ -1741,7 +1764,6 @@ class TrelloShoppingApp {
         const content = document.getElementById('product-detail-content');
 
         modal.classList.remove('hidden');
-        document.body.style.overflow = 'hidden';
         content.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando...</p></div>';
 
         try {
@@ -2200,7 +2222,6 @@ class TrelloShoppingApp {
 
     closeProductDetail() {
         document.getElementById('product-detail-modal').classList.add('hidden');
-        document.body.style.overflow = '';
     }
 
     promptRemoveReason(card) {
@@ -2795,11 +2816,9 @@ class TrelloShoppingApp {
         `;
 
         document.body.appendChild(modal);
-        document.body.style.overflow = 'hidden';
 
         const closeModal = () => {
             modal.remove();
-            document.body.style.overflow = '';
         };
 
         // Bind events
@@ -2815,7 +2834,6 @@ class TrelloShoppingApp {
 
         document.getElementById('settings-user').addEventListener('click', async () => {
             modal.remove();
-            document.body.style.overflow = '';
             await this.promptCurrentUserName();
         });
 
@@ -3031,7 +3049,6 @@ class TrelloShoppingApp {
         if (coldToggle) coldToggle.checked = false;
         this.renderDuplicateSuggestions('');
         document.getElementById('add-modal').classList.remove('hidden');
-        document.body.style.overflow = 'hidden';
 
         // Reset image upload area
         const uploadArea = document.getElementById('image-upload-area');
@@ -3197,7 +3214,6 @@ class TrelloShoppingApp {
 
     closeAddModal() {
         document.getElementById('add-modal').classList.add('hidden');
-        document.body.style.overflow = '';
     }
 
     renderLabelPickers() {
@@ -3776,11 +3792,6 @@ class TrelloShoppingApp {
             });
         });
 
-        document.getElementById('back-to-settings').addEventListener('click', () => {
-            modal.remove();
-            this.showSettings();
-        });
-
         document.getElementById('add-store-btn').addEventListener('click', () => {
             const name = document.getElementById('new-store-name').value.trim();
             const icon = document.getElementById('new-store-icon').value.trim() || '🏪';
@@ -3896,11 +3907,6 @@ class TrelloShoppingApp {
                 const index = parseInt(btn.dataset.index);
                 this.removeLocation(index);
             });
-        });
-
-        document.getElementById('back-to-settings-locations').addEventListener('click', () => {
-            modal.remove();
-            this.showSettings();
         });
 
         document.getElementById('add-location-btn').addEventListener('click', () => {
