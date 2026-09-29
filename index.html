@@ -433,12 +433,23 @@
             font-size: 15px;
             font-weight: 500;
             cursor: pointer;
-            min-height: 40px;
-            padding: 8px 4px;
+            min-height: 44px;
+            padding: 8px 12px;
             display: flex;
             align-items: center;
             gap: 4px;
             flex-shrink: 0;
+            touch-action: manipulation;
+            border-radius: var(--radius);
+        }
+
+        .back-btn:active,
+        .back-btn.is-pressed,
+        .back-button:active,
+        .back-button.is-pressed {
+            background: rgba(99, 102, 241, 0.2);
+            color: var(--text);
+            transform: scale(0.96);
         }
 
         .detail-title {
@@ -1519,9 +1530,11 @@
             font-size: 15px;
             font-weight: 500;
             cursor: pointer;
-            min-height: 40px;
-            padding: 8px 4px;
+            min-height: 44px;
+            padding: 8px 12px;
             flex-shrink: 0;
+            touch-action: manipulation;
+            border-radius: var(--radius);
         }
 
         .shopping-active-list {
@@ -2282,6 +2295,6 @@
         </div>
     </div>
 
-    <script src="app.js?v=12"></script>
+    <script src="app.js?v=17"></script>
 </body>
 </html>

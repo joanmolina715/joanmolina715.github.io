@@ -91,6 +91,7 @@ class TrelloShoppingApp {
 
         // Cache for image blob URLs
         this.imageCache = new Map();
+        this.detailRequestController = null;
 
         // Recent products tracking (last 10 marked as purchased)
         this.recentProducts = this.loadRecentProducts();
@@ -573,9 +574,9 @@ class TrelloShoppingApp {
         }
     }
 
-    async getCardHistory(cardId) {
+    async getCardHistory(cardId, signal) {
         try {
-            const actions = await this.getCardActions(cardId);
+            const actions = await this.getCardActions(cardId, signal);
             return actions
                 .map(action => this.parseHistoryComment(action))
                 .filter(Boolean);
@@ -818,7 +819,7 @@ class TrelloShoppingApp {
         document.getElementById('settings-btn')?.addEventListener('click', () => this.showSettings());
 
         // Navigation
-        document.getElementById('back-to-stores-btn')?.addEventListener('click', () => this.showStoreCards());
+        this.bindBackButton(document.getElementById('back-to-stores-btn'), () => this.showStoreCards({ deferRender: true }));
         document.getElementById('shopping-mode-btn')?.addEventListener('click', () => this.showShoppingMode());
 
         // Enter key on inputs
@@ -831,7 +832,21 @@ class TrelloShoppingApp {
 
         // Add product modal
         document.getElementById('add-product-detail-btn')?.addEventListener('click', () => this.openAddModal());
-        document.getElementById('search-product-detail-btn')?.addEventListener('click', () => this.focusSearchInput());
+        const searchButton = document.getElementById('search-product-detail-btn');
+        searchButton?.addEventListener('mousedown', (event) => {
+            // Keep the button from taking focus away from the search field.
+            event.preventDefault();
+        });
+        const focusSearch = (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            this.focusSearchInput();
+        };
+        searchButton?.addEventListener('touchend', (event) => {
+            // Focus during the touch gesture so iOS opens the keyboard on the first tap.
+            focusSearch(event);
+        }, { passive: false });
+        searchButton?.addEventListener('click', focusSearch);
         document.getElementById('modal-close')?.addEventListener('click', () => this.closeAddModal());
         document.getElementById('add-modal')?.addEventListener('click', (e) => {
             if (e.target.id === 'add-modal') this.closeAddModal();
@@ -849,7 +864,7 @@ class TrelloShoppingApp {
         document.addEventListener('click', (e) => {
             const activeElement = document.activeElement;
             if (activeElement && (activeElement.tagName === 'INPUT' || activeElement.tagName === 'TEXTAREA')) {
-                if (!e.target.closest('input, textarea, .search-container-inline')) {
+                if (!e.target.closest('input, textarea, .search-container-inline, #search-product-detail-btn')) {
                     activeElement.blur();
                 }
             }
@@ -941,8 +956,8 @@ class TrelloShoppingApp {
         return this.trelloFetch(`/boards/${boardId}/cards?fields=name,idList,idLabels,pos,desc&attachments=true&attachment_fields=url,name,mimeType,previews`);
     }
 
-    async getCardAttachments(cardId) {
-        return this.trelloFetch(`/cards/${cardId}/attachments?fields=all`);
+    async getCardAttachments(cardId, signal) {
+        return this.trelloFetch(`/cards/${cardId}/attachments?fields=all`, { signal });
     }
 
     async getLabels(boardId) {
@@ -1010,8 +1025,8 @@ class TrelloShoppingApp {
         });
     }
 
-    async getCardActions(cardId) {
-        return this.trelloFetch(`/cards/${cardId}/actions?filter=commentCard&fields=data,date&memberCreator_fields=fullName,username&limit=30`);
+    async getCardActions(cardId, signal) {
+        return this.trelloFetch(`/cards/${cardId}/actions?filter=commentCard&fields=data,date&memberCreator_fields=fullName,username&limit=30`, { signal });
     }
 
     async recordCardHistory(entry) {
@@ -1280,7 +1295,19 @@ class TrelloShoppingApp {
         });
     }
 
-    showStoreCards() {
+    bindBackButton(button, navigate) {
+        if (!button) return;
+        button.addEventListener('click', () => {
+            if (button.classList.contains('is-pressed')) return;
+            button.classList.add('is-pressed');
+            window.setTimeout(() => {
+                button.classList.remove('is-pressed');
+                navigate();
+            }, 90);
+        });
+    }
+
+    showStoreCards({ deferRender = false } = {}) {
         this.currentView = 'stores';
         this.searchQuery = '';
         clearTimeout(this.searchTimeout);
@@ -1294,7 +1321,14 @@ class TrelloShoppingApp {
         // Scroll to top when returning to main view
         window.scrollTo(0, 0);
         
-        this.renderStoreCards();
+        if (deferRender) {
+            // Show the existing overview first, then update its counts after it paints.
+            requestAnimationFrame(() => requestAnimationFrame(() => {
+                if (this.currentView === 'stores') this.renderStoreCards();
+            }));
+        } else {
+            this.renderStoreCards();
+        }
     }
 
     showStoreDetail(storeLabel) {
@@ -1318,7 +1352,8 @@ class TrelloShoppingApp {
         const searchInput = document.getElementById('product-search-inline');
         if (!searchInput) return;
 
-        window.scrollTo(0, 0);
+        // Reveal the field even when it is already focused and the list was scrolled.
+        window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
         searchInput.focus({ preventScroll: true });
     }
 
@@ -1692,8 +1727,9 @@ class TrelloShoppingApp {
     }
 
     // Fetch image using your Cloudflare Worker proxy
-    async fetchImageWithOAuth(url) {
+    async fetchImageWithOAuth(url, signal) {
         if (!url) return null;
+        if (signal?.aborted) return null;
 
         // Check cache first
         if (this.imageCache.has(url)) {
@@ -1707,6 +1743,11 @@ class TrelloShoppingApp {
             return null;
         }
 
+        const requestController = new AbortController();
+        const abortRequest = () => requestController.abort();
+        signal?.addEventListener('abort', abortRequest, { once: true });
+        const timeout = setTimeout(abortRequest, 12000);
+
         try {
             // Debug: check if URL has credentials
             console.log('📷 Fetching:', url.substring(0, 100), '...has token:', url.includes('token='));
@@ -1716,6 +1757,7 @@ class TrelloShoppingApp {
             
             const response = await fetch(proxyUrl, {
                 method: 'GET',
+                signal: requestController.signal,
                 headers: {
                     'Accept': 'image/*'
                 }
@@ -1725,6 +1767,7 @@ class TrelloShoppingApp {
                 const blob = await response.blob();
                 
                 if (blob.size > 0) {
+                    if (requestController.signal.aborted) return null;
                     const blobUrl = URL.createObjectURL(blob);
                     this.imageCache.set(url, blobUrl);
                     console.log('✅ Image loaded via worker');
@@ -1736,7 +1779,10 @@ class TrelloShoppingApp {
                 console.error('Error details:', errorText);
             }
         } catch (error) {
-            console.error('💥 Worker error:', error.message);
+            if (error.name !== 'AbortError') console.error('💥 Worker error:', error.message);
+        } finally {
+            clearTimeout(timeout);
+            signal?.removeEventListener('abort', abortRequest);
         }
 
         return null;
@@ -1758,20 +1804,36 @@ class TrelloShoppingApp {
         const card = this.cards.find(c => c.id === cardId);
         if (!card) return;
 
+        this.detailRequestController?.abort();
+        const controller = new AbortController();
+        this.detailRequestController = controller;
         this.currentEditingCard = card;
 
         const modal = document.getElementById('product-detail-modal');
         const content = document.getElementById('product-detail-content');
 
         modal.classList.remove('hidden');
-        content.innerHTML = '<div class="loading"><div class="spinner"></div><p>Cargando...</p></div>';
+        content.innerHTML = `<div class="product-detail-header">
+            <h3>${this.escapeHtml(card.name)}</h3>
+            <button class="modal-close" type="button" aria-label="Cerrar detalle" onclick="app.closeProductDetail()">&times;</button>
+        </div><div class="loading"><div class="spinner"></div><p>Cargando...</p>
+            <button class="modal-btn secondary" type="button" onclick="app.closeProductDetail()">Cancelar</button>
+        </div>`;
 
+        const metadataController = new AbortController();
+        controller.signal.addEventListener('abort', () => metadataController.abort(), { once: true });
+        let timeout;
         try {
             // Fetch attachments and shopping history for this card
-            const [attachments, history] = await Promise.all([
-                this.getCardAttachments(cardId).catch(() => card.attachments || []),
-                this.getCardHistory(cardId)
-            ]);
+            const offline = !navigator.onLine || !this.serverReachable;
+            if (!offline) timeout = setTimeout(() => metadataController.abort(), 10000);
+            const [attachments, history] = offline
+                ? [card.attachments || [], []]
+                : await Promise.all([
+                    this.getCardAttachments(cardId, metadataController.signal).catch(() => card.attachments || []),
+                    this.getCardHistory(cardId, metadataController.signal)
+                ]);
+            if (this.detailRequestController !== controller || modal.classList.contains('hidden')) return;
             const images = attachments.filter(a => a.mimeType?.startsWith('image/'));
             this.currentCardImages = images;
 
@@ -1800,8 +1862,8 @@ class TrelloShoppingApp {
 
             content.innerHTML = `
                 <div class="product-detail-header">
-                    <h3>${card.name}</h3>
-                    <button class="modal-close" onclick="app.closeProductDetail()">&times;</button>
+                    <h3>${this.escapeHtml(card.name)}</h3>
+                    <button class="modal-close" type="button" aria-label="Cerrar detalle" onclick="app.closeProductDetail()">&times;</button>
                 </div>
                 ${imagesHtml}
                 <div class="product-detail-info">
@@ -1880,9 +1942,15 @@ class TrelloShoppingApp {
             document.getElementById('product-cold')?.addEventListener('change', () => this.saveColdFlag(cardId));
 
             // Load images with OAuth after HTML is rendered
-            this.loadDetailImages(images);
+            this.loadDetailImages(images, controller.signal);
         } catch (error) {
-            content.innerHTML = `<div class="empty-state"><p>Error: ${error.message}</p></div>`;
+            if (this.detailRequestController !== controller || modal.classList.contains('hidden')) return;
+            content.innerHTML = `<div class="product-detail-header">
+                <h3>${this.escapeHtml(card.name)}</h3>
+                <button class="modal-close" type="button" aria-label="Cerrar detalle" onclick="app.closeProductDetail()">&times;</button>
+            </div><div class="empty-state"><p>Error al cargar el producto</p></div>`;
+        } finally {
+            clearTimeout(timeout);
         }
     }
 
@@ -1961,14 +2029,20 @@ class TrelloShoppingApp {
     }
 
     // Load detail images using OAuth
-    async loadDetailImages(images) {
+    async loadDetailImages(images, signal) {
         for (let i = 0; i < images.length; i++) {
+            if (signal?.aborted) return;
             const imgElement = document.querySelector(`img[data-image-index="${i}"]`);
             if (!imgElement) continue;
 
             const url = this.getAttachmentUrl(images[i]);
             if (url) {
-                const blobUrl = await this.fetchImageWithOAuth(url);
+                if ((!navigator.onLine || !this.serverReachable) && !this.imageCache.has(url)) {
+                    imgElement.parentElement.style.display = 'none';
+                    continue;
+                }
+                const blobUrl = await this.fetchImageWithOAuth(url, signal);
+                if (signal?.aborted) return;
                 if (blobUrl) {
                     imgElement.src = blobUrl;
                     imgElement.parentElement?.querySelector('.image-loading-spinner')?.remove();
@@ -2221,6 +2295,8 @@ class TrelloShoppingApp {
     }
 
     closeProductDetail() {
+        this.detailRequestController?.abort();
+        this.detailRequestController = null;
         document.getElementById('product-detail-modal').classList.add('hidden');
     }
 
@@ -2382,9 +2458,7 @@ class TrelloShoppingApp {
         container.innerHTML = html;
 
         // Bind click events
-        document.getElementById('back-from-shopping')?.addEventListener('click', () => {
-            this.showStoreCards();
-        });
+        this.bindBackButton(document.getElementById('back-from-shopping'), () => this.showStoreCards());
 
         container.querySelectorAll('.shopping-store-card').forEach(btn => {
             btn.addEventListener('click', () => {
@@ -2497,7 +2571,7 @@ class TrelloShoppingApp {
         container.innerHTML = html;
 
         // Bind events
-        document.getElementById('back-to-shopping-stores')?.addEventListener('click', () => {
+        this.bindBackButton(document.getElementById('back-to-shopping-stores'), () => {
             this.selectedStore = null;
             window.scrollTo(0, 0);
             this.renderShoppingMode();
@@ -3019,10 +3093,7 @@ class TrelloShoppingApp {
             this.showToast(`✅ "${productName}" eliminado`);
 
             // Close detail modal if open
-            const detailModal = document.getElementById('product-detail-modal');
-            if (detailModal) {
-                detailModal.classList.add('hidden');
-            }
+            this.closeProductDetail();
 
             // Refresh view
             if (this.currentView === 'stores') {
