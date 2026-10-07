@@ -1,8 +1,8 @@
-const CACHE_NAME = 'shopping-list-shell-v17';
+const CACHE_NAME = 'shopping-list-shell-v18';
 const APP_SHELL = [
     './',
     './index.html',
-    './app.js?v=17',
+    './app.js?v=18',
     './manifest.json',
     './icon-192.png',
     './icon-512.png'

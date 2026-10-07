@@ -2869,7 +2869,7 @@ class TrelloShoppingApp {
                         </span>
                         <div class="settings-option-text">
                             <strong>Importar / Exportar</strong>
-                            <span>Importar o exportar productos en JSON</span>
+                            <span>Importar JSON o copiar todos los productos como texto</span>
                         </div>
                     </button>
 
@@ -3502,6 +3502,48 @@ class TrelloShoppingApp {
         this.showToast(`Exportados ${products.length} productos`);
     }
 
+    async copyProductsAsText() {
+        const names = this.cards
+            .map(card => card.name?.replace(/[\r\n]+/g, ' ').trim())
+            .filter(Boolean)
+            .sort((a, b) => a.localeCompare(b, 'es'));
+
+        if (names.length === 0) {
+            this.showToast('No hay productos para copiar');
+            return;
+        }
+
+        const text = names.join('\n');
+        try {
+            if (!navigator.clipboard?.writeText) throw new Error('Clipboard API no disponible');
+            await navigator.clipboard.writeText(text);
+        } catch (error) {
+            // Fallback for browsers that do not expose the Clipboard API.
+            const textarea = document.createElement('textarea');
+            textarea.value = text;
+            textarea.setAttribute('readonly', '');
+            textarea.style.position = 'fixed';
+            textarea.style.opacity = '0';
+            document.body.appendChild(textarea);
+            textarea.select();
+            textarea.setSelectionRange(0, textarea.value.length);
+            let copied = false;
+            try {
+                copied = document.execCommand('copy');
+            } catch (copyError) {
+                console.warn('No se pudo copiar el texto:', copyError);
+            } finally {
+                textarea.remove();
+            }
+            if (!copied) {
+                this.showToast('No se pudo copiar al portapapeles');
+                return;
+            }
+        }
+
+        this.showToast(`${names.length} producto${names.length === 1 ? '' : 's'} copiado${names.length === 1 ? '' : 's'} al portapapeles`);
+    }
+
     async importProducts(file) {
         try {
             const text = await file.text();
@@ -3651,6 +3693,14 @@ class TrelloShoppingApp {
                 </div>
 
                 <div class="modal-section" style="margin-top: 24px;">
+                    <div class="modal-section-title">Copiar productos como texto</div>
+                    <p style="color: var(--text-secondary); font-size: 14px; margin-bottom: 12px;">
+                        Copia los nombres de todos los productos, uno por línea, al portapapeles.
+                    </p>
+                    <button class="btn btn-secondary" id="copy-products-btn">📋 Copiar lista de productos</button>
+                </div>
+
+                <div class="modal-section" style="margin-top: 24px;">
                     <div class="modal-section-title">Importar productos</div>
                     <p style="color: var(--text-secondary); font-size: 14px; margin-bottom: 8px;">
                         Importa productos desde un archivo JSON. Características:
@@ -3683,6 +3733,10 @@ class TrelloShoppingApp {
 
         document.getElementById('export-btn').addEventListener('click', () => {
             this.exportProducts();
+        });
+
+        document.getElementById('copy-products-btn').addEventListener('click', () => {
+            this.copyProductsAsText();
         });
 
         document.getElementById('import-btn').addEventListener('click', () => {
