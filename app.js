@@ -1395,9 +1395,10 @@ class TrelloShoppingApp {
             storeUrgentCounts[label.id] = activeCards.filter(card => this.getActiveUrgent(card)).length;
         });
 
-        // Sort stores by active products count (descending)
+        // Show stores with the most urgent products first, then the most active products.
         const sortedStoreLabels = [...storeLabels].sort((a, b) => {
-            return storeCounts[b.id] - storeCounts[a.id];
+            return storeUrgentCounts[b.id] - storeUrgentCounts[a.id]
+                || storeCounts[b.id] - storeCounts[a.id];
         });
 
         let html = sortedStoreLabels.map(label => {
