@@ -1377,20 +1377,22 @@ class TrelloShoppingApp {
         // Count products per store in active list and total
         const storeCounts = {};
         const storeTotals = {};
+        const storeUrgentCounts = {};
         storeLabels.forEach(label => {
             // Count active products (in Lista Activa)
-            const activeCount = this.cards.filter(c => 
+            const activeCards = this.cards.filter(c =>
                 c.idList === this.activeList.id && 
                 c.idLabels.includes(label.id)
-            ).length;
+            );
             
             // Count total products (in any list with this store label)
             const totalCount = this.cards.filter(c => 
                 c.idLabels.includes(label.id)
             ).length;
             
-            storeCounts[label.id] = activeCount;
+            storeCounts[label.id] = activeCards.length;
             storeTotals[label.id] = totalCount;
+            storeUrgentCounts[label.id] = activeCards.filter(card => this.getActiveUrgent(card)).length;
         });
 
         // Sort stores by active products count (descending)
@@ -1401,6 +1403,7 @@ class TrelloShoppingApp {
         let html = sortedStoreLabels.map(label => {
             const activeCount = storeCounts[label.id];
             const totalCount = storeTotals[label.id];
+            const urgentCount = storeUrgentCounts[label.id];
             const icon = this.getStoreIcon(label.name);
             const countText = totalCount === 1 ? `${activeCount}/1 producto` : `${activeCount}/${totalCount} productos`;
 
@@ -1409,6 +1412,7 @@ class TrelloShoppingApp {
                     <div class="store-card-content">
                         <div class="store-card-name">${label.name}</div>
                         <div class="store-card-count">${countText}</div>
+                        ${urgentCount > 0 ? `<span class="store-card-urgent" aria-label="${urgentCount} producto${urgentCount === 1 ? '' : 's'} urgente${urgentCount === 1 ? '' : 's'} pendiente${urgentCount === 1 ? '' : 's'}">¡${urgentCount} urgente${urgentCount === 1 ? '' : 's'}!</span>` : ''}
                     </div>
                     <div class="store-card-icon">${icon}</div>
                 </div>
